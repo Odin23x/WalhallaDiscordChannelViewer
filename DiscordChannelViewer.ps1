@@ -3,11 +3,15 @@
 # PowerShell 5.1 compatible
 # NO ternary operator, NO inline if-expressions, NO PS7 syntax
 
-[Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+try {
+    [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+} catch {}
 
-$PluginId = "odin23x.walhalla_discord_channel_viewer"
-$TPPort   = 12136
-$ApiBase  = "https://discord.com/api/v10"
+$PluginId    = "odin23x.walhalla_discord_channel_viewer"
+$TPPort      = 12136
+$ApiBase     = "https://discord.com/api/v10"
+$PluginDir   = Join-Path $env:APPDATA "TouchPortal\plugins\WalhallaDiscordChannelViewer"
+$Script:LogFile = Join-Path $PluginDir "plugin.log"
 
 # --- State ID constants ---
 $S_STATUS  = "$PluginId.state.status"
@@ -18,59 +22,61 @@ $S_LASTCHK = "$PluginId.state.last_check"
 $S_LASTERR = "$PluginId.state.last_error"
 $S_DEBUG   = "$PluginId.state.debug"
 
-# --- Settings (populated by TP) ---
+# --- Settings ---
 $Script:BotToken      = ""
 $Script:GuildId       = ""
 $Script:UserId        = ""
 $Script:CheckInterval = 5
 
-# --- Runtime flags ---
+# --- Runtime ---
 $Script:Running      = $true
 $Script:ForceRefresh = $false
+$Script:UserCache    = @{}
 
-# --- User display name cache ---
-$Script:UserCache = @{}
-
-# --- TCP connection objects ---
+# --- TCP objects ---
 $Script:Tcp    = $null
 $Script:Stream = $null
 $Script:Writer = $null
 $Script:Reader = $null
 
 # =============================================================
-# Logging
+# Logging - uses absolute path, falls back to Desktop
 # =============================================================
-
 function Write-Log {
     param([string]$Msg)
+    $ts   = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
+    $line = "[$ts] $Msg"
+    $written = $false
     try {
-        $ts   = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
-        $line = "[$ts] $Msg"
-        Add-Content -Path "$PSScriptRoot\plugin.log" -Value $line -Encoding UTF8 -ErrorAction SilentlyContinue
+        Add-Content -Path $Script:LogFile -Value $line -Encoding UTF8
+        $written = $true
     } catch {}
+    if (-not $written) {
+        try {
+            $desk = [Environment]::GetFolderPath("Desktop")
+            Add-Content -Path (Join-Path $desk "WalhallaDiscordViewer_LOG.txt") -Value $line -Encoding UTF8
+        } catch {}
+    }
 }
 
 # =============================================================
 # Touch Portal connection
 # =============================================================
-
 function Connect-TP {
     try {
         $Script:Tcp    = New-Object System.Net.Sockets.TcpClient
         $Script:Tcp.Connect("127.0.0.1", $TPPort)
         $Script:Stream = $Script:Tcp.GetStream()
-
         $enc           = New-Object System.Text.UTF8Encoding($false)
         $Script:Writer = New-Object System.IO.StreamWriter($Script:Stream, $enc)
         $Script:Writer.AutoFlush = $true
         $Script:Reader = New-Object System.IO.StreamReader($Script:Stream, $enc)
-
         $pairMsg = '{"type":"pair","id":"' + $PluginId + '"}'
         $Script:Writer.WriteLine($pairMsg)
         Write-Log "Connected and paired with Touch Portal"
         return $true
     } catch {
-        Write-Log "Connect-TP error: $($_.Exception.Message)"
+        Write-Log "Connect-TP FAILED: $($_.Exception.Message)"
         return $false
     }
 }
@@ -98,7 +104,6 @@ function Send-TPRaw {
 
 function Set-State {
     param([string]$Id, [string]$Val)
-    # Use ConvertTo-Json for correct JSON string escaping
     $jsonVal = $Val | ConvertTo-Json
     $json = '{"type":"stateUpdate","id":"' + $Id + '","value":' + $jsonVal + '}'
     Send-TPRaw -Json $json
@@ -113,11 +118,8 @@ function Read-TPMessage {
         if ($Script:Stream.DataAvailable) {
             $line = $Script:Reader.ReadLine()
             if ($null -ne $line -and $line.Trim() -ne "") {
-                try {
-                    return ($line | ConvertFrom-Json)
-                } catch {
-                    Write-Log "JSON parse error: $($_.Exception.Message)"
-                }
+                try   { return ($line | ConvertFrom-Json) }
+                catch { Write-Log "JSON parse error: $($_.Exception.Message)" }
             }
         }
     } catch {
@@ -130,10 +132,8 @@ function Read-TPMessage {
 # =============================================================
 # Settings
 # =============================================================
-
 function Process-Settings {
-    param([object[]]$Items)
-    # Clear user cache when settings change
+    param($Items)
     $Script:UserCache = @{}
     foreach ($item in $Items) {
         switch ($item.name) {
@@ -155,21 +155,15 @@ function Process-Settings {
             }
         }
     }
-    Write-Log "Settings applied - GuildId='$($Script:GuildId)' UserId='$($Script:UserId)' Interval=$($Script:CheckInterval)s"
+    Write-Log "Settings applied - Guild=$($Script:GuildId) User=$($Script:UserId) Interval=$($Script:CheckInterval)s"
 }
 
 # =============================================================
-# Discord helpers
+# Discord API
 # =============================================================
-
 function Get-DisplayName {
-    param(
-        [string]$UserId,
-        $MemberObj,
-        [hashtable]$Headers
-    )
+    param([string]$UserId, $MemberObj, [hashtable]$Headers)
 
-    # 1) Try the member object included in the voice state
     if ($null -ne $MemberObj) {
         if ($null -ne $MemberObj.nick -and $MemberObj.nick -ne "") {
             $Script:UserCache[$UserId] = $MemberObj.nick
@@ -189,12 +183,10 @@ function Get-DisplayName {
         }
     }
 
-    # 2) Check session cache
     if ($Script:UserCache.ContainsKey($UserId)) {
         return $Script:UserCache[$UserId]
     }
 
-    # 3) Fallback: query member endpoint individually
     try {
         $url    = "$ApiBase/guilds/$($Script:GuildId)/members/$UserId"
         $member = Invoke-RestMethod -Uri $url -Headers $Headers -Method Get -ErrorAction Stop
@@ -211,7 +203,6 @@ function Get-DisplayName {
         $Script:UserCache[$UserId] = $name
         return $name
     } catch {
-        # Last resort: return the raw user ID
         return $UserId
     }
 }
@@ -235,7 +226,6 @@ function Invoke-DiscordPoll {
 
         $voiceStates = Invoke-RestMethod -Uri $vsUrl -Headers $headers -Method Get -ErrorAction Stop
 
-        # Find my voice state channel
         $myChannelId = $null
         foreach ($vs in $voiceStates) {
             if ($vs.user_id -eq $Script:UserId) {
@@ -251,17 +241,15 @@ function Invoke-DiscordPoll {
             Set-State -Id $S_COUNT   -Val "0"
             Write-Log "User not in any voice channel"
         } else {
-            # Resolve channel name
             $chUrl  = "$ApiBase/channels/$myChannelId"
             $chData = Invoke-RestMethod -Uri $chUrl -Headers $headers -Method Get -ErrorAction Stop
             $chName = $chData.name
             if ($null -eq $chName -or $chName -eq "") { $chName = $myChannelId }
 
-            # Collect all members in same channel
             $names = @()
             foreach ($vs in $voiceStates) {
                 if ($vs.channel_id -eq $myChannelId) {
-                    $dn = Get-DisplayName -UserId $vs.user_id -MemberObj $vs.member -Headers $headers
+                    $dn    = Get-DisplayName -UserId $vs.user_id -MemberObj $vs.member -Headers $headers
                     $names += $dn
                 }
             }
@@ -273,7 +261,7 @@ function Invoke-DiscordPoll {
             Set-State -Id $S_CHANNEL -Val $chName
             Set-State -Id $S_MEMBERS -Val $memberStr
             Set-State -Id $S_COUNT   -Val $cntStr
-            Write-Log "Channel: $chName | Members ($($names.Count)): $memberStr"
+            Write-Log "Channel: $chName | Members($cntStr): $memberStr"
         }
 
         Set-State -Id $S_LASTCHK -Val (Get-Date -Format "HH:mm:ss")
@@ -284,18 +272,17 @@ function Invoke-DiscordPoll {
         Set-State -Id $S_STATUS  -Val "API Fehler"
         Set-State -Id $S_LASTERR -Val $err
         Set-State -Id $S_LASTCHK -Val (Get-Date -Format "HH:mm:ss")
-        Write-Log "Poll error: $err"
+        Write-Log "Poll FAILED: $err"
     }
 }
 
 # =============================================================
 # Main
 # =============================================================
-
-Write-Log "=== WalhallaDiscordChannelViewer starting ==="
+Write-Log "=== WalhallaDiscordChannelViewer starting | PSScriptRoot=$PSScriptRoot | LogFile=$($Script:LogFile) ==="
 
 if (-not (Connect-TP)) {
-    Write-Log "Failed to connect to Touch Portal. Exiting."
+    Write-Log "FATAL: Could not connect to Touch Portal on port $TPPort"
     exit 1
 }
 
@@ -305,11 +292,9 @@ $lastPoll = [DateTime]::MinValue
 
 while ($Script:Running) {
 
-    # Drain all pending TP messages
     $msg = Read-TPMessage
     while ($null -ne $msg) {
         $t = $msg.type
-
         if ($t -eq "info") {
             if ($null -ne $msg.settings) {
                 Process-Settings -Items $msg.settings
@@ -324,17 +309,15 @@ while ($Script:Running) {
             $aid = $msg.actionId
             if ($aid -eq "$PluginId.action.refresh") {
                 $Script:ForceRefresh = $true
-                Write-Log "Force refresh requested via action"
+                Write-Log "Force refresh via action"
             }
         } elseif ($t -eq "closePlugin") {
             Write-Log "closePlugin received"
             $Script:Running = $false
         }
-
         $msg = Read-TPMessage
     }
 
-    # Poll Discord if interval elapsed or force refresh requested
     $elapsed = ([DateTime]::Now - $lastPoll).TotalSeconds
     if ($Script:ForceRefresh -or ($elapsed -ge [double]$Script:CheckInterval)) {
         $Script:ForceRefresh = $false
