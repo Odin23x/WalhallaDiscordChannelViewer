@@ -131,8 +131,22 @@ function Read-TPMessage {
 function Apply-OneSetting {
     param([string]$Name, [string]$Value)
     switch ($Name) {
-        "Application ID"         { $Script:ClientId      = $Value }
-        "Client Secret"          { $Script:ClientSecret  = $Value }
+        "Application ID"  { $Script:ClientId     = $Value }
+        "Client Secret"   { $Script:ClientSecret = $Value }
+        # Legacy v1 field names - TP keeps old names after reinstall
+        # "Discord Bot Token" field now holds the Client Secret value
+        "Discord Bot Token" {
+            if ($null -ne $Value -and $Value -ne "") {
+                $Script:ClientSecret = $Value
+                Write-Log "Mapped legacy 'Discord Bot Token' field -> ClientSecret"
+            }
+        }
+        "Discord Guild ID" {
+            # not used in RPC mode, ignore
+        }
+        "Discord User ID" {
+            # not used in RPC mode, ignore
+        }
         "Check Interval Seconds" {
             $p = 5
             if ([int]::TryParse($Value, [ref]$p)) {
