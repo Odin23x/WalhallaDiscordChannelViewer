@@ -3,7 +3,16 @@
 # PowerShell 5.1 compatible - NO PS7 syntax, NO ternary
 # Uses Discord local RPC pipe - no bot needs to be in any server
 
+# Startup diagnostic - writes to Desktop before anything else
+try {
+    $Script:StartupDiag = Join-Path ([Environment]::GetFolderPath("Desktop")) "WalhallaDC_Start.txt"
+    Add-Content -Path $Script:StartupDiag -Value "[$(Get-Date -Format 'HH:mm:ss')] Script started, loading..." -Encoding UTF8
+} catch {}
+
 try { [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12 } catch {}
+
+# Ensure System.IO.Pipes is loaded
+try { Add-Type -AssemblyName System.Core -ErrorAction SilentlyContinue } catch {}
 
 $PluginId  = "odin23x.walhalla_discord_channel_viewer"
 $TPPort    = 12136
