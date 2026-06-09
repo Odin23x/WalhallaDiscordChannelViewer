@@ -231,6 +231,114 @@ function Get-DisplayName {
     }
 }
 
+# Full poll using the list endpoint (requires Administrator on the bot)
+function Invoke-DiscordPollFull {
+    param([hashtable]$Headers)
+
+    $vsUrl = "$ApiBase/guilds/$($Script:GuildId)/voice-states"
+    Set-State -Id $S_DEBUG -Val "FULL: GET $vsUrl"
+    Write-Log "Polling (full): $vsUrl"
+
+    $voiceStates = Invoke-RestMethod -Uri $vsUrl -Headers $Headers -Method Get -ErrorAction Stop
+
+    $myChannelId = $null
+    foreach ($vs in $voiceStates) {
+        if ($vs.user_id -eq $Script:UserId) {
+            $myChannelId = $vs.channel_id
+            break
+        }
+    }
+
+    if ($null -eq $myChannelId -or $myChannelId -eq "") {
+        Set-State -Id $S_STATUS  -Val "Online"
+        Set-State -Id $S_CHANNEL -Val "Nicht verbunden"
+        Set-State -Id $S_MEMBERS -Val ""
+        Set-State -Id $S_COUNT   -Val "0"
+        Write-Log "User not in any voice channel"
+    } else {
+        $chUrl  = "$ApiBase/channels/$myChannelId"
+        $chData = Invoke-RestMethod -Uri $chUrl -Headers $Headers -Method Get -ErrorAction Stop
+        $chName = $chData.name
+        if ($null -eq $chName -or $chName -eq "") { $chName = $myChannelId }
+
+        $names = @()
+        foreach ($vs in $voiceStates) {
+            if ($vs.channel_id -eq $myChannelId) {
+                $dn = Get-DisplayName -UserId $vs.user_id -MemberObj $vs.member -Headers $Headers
+                $names += $dn
+            }
+        }
+
+        $memberStr = $names -join ", "
+        $cntStr    = [string]$names.Count
+
+        Set-State -Id $S_STATUS  -Val "Online"
+        Set-State -Id $S_CHANNEL -Val $chName
+        Set-State -Id $S_MEMBERS -Val $memberStr
+        Set-State -Id $S_COUNT   -Val $cntStr
+        Write-Log "Full poll OK - Channel: $chName | Members($cntStr): $memberStr"
+    }
+
+    Set-State -Id $S_LASTCHK -Val (Get-Date -Format "HH:mm:ss")
+    Set-State -Id $S_LASTERR -Val ""
+}
+
+# Fallback poll using only the individual voice-state endpoint (basic bot permissions)
+# Shows my channel but cannot list other members without the list endpoint
+function Invoke-DiscordPollFallback {
+    param([hashtable]$Headers)
+
+    $myVsUrl = "$ApiBase/guilds/$($Script:GuildId)/voice-states/$($Script:UserId)"
+    Set-State -Id $S_DEBUG -Val "FALLBACK: GET $myVsUrl"
+    Write-Log "Polling (fallback): $myVsUrl"
+
+    try {
+        $myVs = Invoke-RestMethod -Uri $myVsUrl -Headers $Headers -Method Get -ErrorAction Stop
+
+        $myChannelId = $myVs.channel_id
+        if ($null -eq $myChannelId -or $myChannelId -eq "") {
+            Set-State -Id $S_STATUS  -Val "Online"
+            Set-State -Id $S_CHANNEL -Val "Nicht verbunden"
+            Set-State -Id $S_MEMBERS -Val ""
+            Set-State -Id $S_COUNT   -Val "0"
+            Set-State -Id $S_LASTERR -Val "Bot braucht Administrator-Recht fuer Mitgliederliste"
+        } else {
+            $chUrl  = "$ApiBase/channels/$myChannelId"
+            $chData = Invoke-RestMethod -Uri $chUrl -Headers $Headers -Method Get -ErrorAction Stop
+            $chName = $chData.name
+            if ($null -eq $chName -or $chName -eq "") { $chName = $myChannelId }
+
+            # Get my own display name from the voice state member object
+            $myName = Get-DisplayName -UserId $Script:UserId -MemberObj $myVs.member -Headers $Headers
+
+            Set-State -Id $S_STATUS  -Val "Online (eingeschraenkt)"
+            Set-State -Id $S_CHANNEL -Val $chName
+            Set-State -Id $S_MEMBERS -Val $myName
+            Set-State -Id $S_COUNT   -Val "?"
+            Set-State -Id $S_LASTERR -Val "Bot braucht Administrator-Recht fuer Mitgliederliste"
+            Write-Log "Fallback OK - Channel: $chName"
+        }
+
+        Set-State -Id $S_LASTCHK -Val (Get-Date -Format "HH:mm:ss")
+
+    } catch {
+        $err = $_.Exception.Message
+        # 404 = user not in any voice channel (no voice state exists)
+        if ($err -like "*404*" -or $err -like "*Nicht gefunden*" -or $err -like "*Not Found*") {
+            Set-State -Id $S_STATUS  -Val "Online"
+            Set-State -Id $S_CHANNEL -Val "Nicht verbunden"
+            Set-State -Id $S_MEMBERS -Val ""
+            Set-State -Id $S_COUNT   -Val "0"
+            Set-State -Id $S_LASTERR -Val "Bot braucht Administrator-Recht fuer Mitgliederliste"
+        } else {
+            Set-State -Id $S_STATUS  -Val "API Fehler"
+            Set-State -Id $S_LASTERR -Val $err
+        }
+        Set-State -Id $S_LASTCHK -Val (Get-Date -Format "HH:mm:ss")
+        Write-Log "Fallback poll error: $err"
+    }
+}
+
 function Invoke-DiscordPoll {
     if ($Script:BotToken -eq "" -or $Script:GuildId -eq "" -or $Script:UserId -eq "") {
         Set-State -Id $S_STATUS -Val "Einstellungen fehlen"
@@ -244,59 +352,19 @@ function Invoke-DiscordPoll {
     }
 
     try {
-        $vsUrl = "$ApiBase/guilds/$($Script:GuildId)/voice-states"
-        Set-State -Id $S_DEBUG -Val "GET $vsUrl"
-        Write-Log "Polling: $vsUrl"
-
-        $voiceStates = Invoke-RestMethod -Uri $vsUrl -Headers $headers -Method Get -ErrorAction Stop
-
-        $myChannelId = $null
-        foreach ($vs in $voiceStates) {
-            if ($vs.user_id -eq $Script:UserId) {
-                $myChannelId = $vs.channel_id
-                break
-            }
-        }
-
-        if ($null -eq $myChannelId -or $myChannelId -eq "") {
-            Set-State -Id $S_STATUS  -Val "Online"
-            Set-State -Id $S_CHANNEL -Val "Nicht verbunden"
-            Set-State -Id $S_MEMBERS -Val ""
-            Set-State -Id $S_COUNT   -Val "0"
-            Write-Log "User not in any voice channel"
-        } else {
-            $chUrl  = "$ApiBase/channels/$myChannelId"
-            $chData = Invoke-RestMethod -Uri $chUrl -Headers $headers -Method Get -ErrorAction Stop
-            $chName = $chData.name
-            if ($null -eq $chName -or $chName -eq "") { $chName = $myChannelId }
-
-            $names = @()
-            foreach ($vs in $voiceStates) {
-                if ($vs.channel_id -eq $myChannelId) {
-                    $dn    = Get-DisplayName -UserId $vs.user_id -MemberObj $vs.member -Headers $headers
-                    $names += $dn
-                }
-            }
-
-            $memberStr = $names -join ", "
-            $cntStr    = [string]$names.Count
-
-            Set-State -Id $S_STATUS  -Val "Online"
-            Set-State -Id $S_CHANNEL -Val $chName
-            Set-State -Id $S_MEMBERS -Val $memberStr
-            Set-State -Id $S_COUNT   -Val $cntStr
-            Write-Log "Channel: $chName | Members($cntStr): $memberStr"
-        }
-
-        Set-State -Id $S_LASTCHK -Val (Get-Date -Format "HH:mm:ss")
-        Set-State -Id $S_LASTERR -Val ""
-
+        Invoke-DiscordPollFull -Headers $headers
     } catch {
         $err = $_.Exception.Message
-        Set-State -Id $S_STATUS  -Val "API Fehler"
-        Set-State -Id $S_LASTERR -Val $err
-        Set-State -Id $S_LASTCHK -Val (Get-Date -Format "HH:mm:ss")
-        Write-Log "Poll FAILED: $err"
+        # 403 = bot lacks Administrator permission for the list endpoint -> use fallback
+        if ($err -like "*403*" -or $err -like "*Unzul*" -or $err -like "*Forbidden*") {
+            Write-Log "403 on list endpoint - switching to fallback (bot needs Administrator)"
+            Invoke-DiscordPollFallback -Headers $headers
+        } else {
+            Set-State -Id $S_STATUS  -Val "API Fehler"
+            Set-State -Id $S_LASTERR -Val $err
+            Set-State -Id $S_LASTCHK -Val (Get-Date -Format "HH:mm:ss")
+            Write-Log "Poll FAILED: $err"
+        }
     }
 }
 
