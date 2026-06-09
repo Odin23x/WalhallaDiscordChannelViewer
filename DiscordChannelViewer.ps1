@@ -170,18 +170,11 @@ function Process-Settings {
         return
     }
 
-    $isArray = ($Items -is [System.Object[]]) -or ($Items -is [System.Collections.IEnumerable] -and $Items -isnot [string])
-
-    if ($isArray) {
-        # Array format: [{name: "...", value: "..."}]
-        foreach ($item in $Items) {
-            if ($null -ne $item -and $null -ne $item.name) {
-                Apply-OneSetting -Name ([string]$item.name) -Value ([string]$item.value)
-            }
-        }
-    } else {
-        # Object/hashtable format: {"Discord Bot Token": "...", ...}
-        $Items.PSObject.Properties | ForEach-Object {
+    # TP sends settings as array of single-key objects: [{"Setting Name": "value"}, ...]
+    # Each element has the setting name as the property KEY, not as a "name" field.
+    foreach ($item in $Items) {
+        if ($null -eq $item) { continue }
+        $item.PSObject.Properties | ForEach-Object {
             Apply-OneSetting -Name $_.Name -Value ([string]$_.Value)
         }
     }
