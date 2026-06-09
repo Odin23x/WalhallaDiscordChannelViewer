@@ -1,0 +1,97 @@
+{
+  "sdk": 6,
+  "version": 100,
+  "name": "WalhallaDiscordChannelViewer",
+  "id": "odin23x.walhalla_discord_channel_viewer",
+  "configuration": {
+    "colorDark": "#23272A",
+    "colorLight": "#7289DA"
+  },
+  "plugin_start_cmd": "powershell.exe -NonInteractive -ExecutionPolicy Bypass -File \"%TP_PLUGIN_FOLDER%DiscordChannelViewer.ps1\"",
+  "settings": [
+    {
+      "name": "Discord Bot Token",
+      "type": "text",
+      "default": "",
+      "isPassword": true
+    },
+    {
+      "name": "Discord Guild ID",
+      "type": "text",
+      "default": ""
+    },
+    {
+      "name": "Discord User ID",
+      "type": "text",
+      "default": ""
+    },
+    {
+      "name": "Check Interval Seconds",
+      "type": "number",
+      "default": "5",
+      "minValue": 2
+    }
+  ],
+  "categories": [
+    {
+      "id": "odin23x.walhalla_discord_channel_viewer.cat.main",
+      "name": "Discord Channel Viewer",
+      "imagepath": "",
+      "actions": [
+        {
+          "id": "odin23x.walhalla_discord_channel_viewer.action.refresh",
+          "name": "Jetzt aktualisieren",
+          "prefix": "Discord",
+          "type": "communicate",
+          "format": "Discord Channel jetzt aktualisieren",
+          "data": []
+        }
+      ],
+      "states": [
+        {
+          "id": "odin23x.walhalla_discord_channel_viewer.state.status",
+          "type": "text",
+          "desc": "Status",
+          "default": "Nicht verbunden"
+        },
+        {
+          "id": "odin23x.walhalla_discord_channel_viewer.state.my_channel",
+          "type": "text",
+          "desc": "Mein Channel",
+          "default": "Nicht verbunden"
+        },
+        {
+          "id": "odin23x.walhalla_discord_channel_viewer.state.members",
+          "type": "text",
+          "desc": "Channel Mitglieder",
+          "default": ""
+        },
+        {
+          "id": "odin23x.walhalla_discord_channel_viewer.state.member_count",
+          "type": "text",
+          "desc": "Mitglieder Anzahl",
+          "default": "0"
+        },
+        {
+          "id": "odin23x.walhalla_discord_channel_viewer.state.last_check",
+          "type": "text",
+          "desc": "Letzter Check",
+          "default": ""
+        },
+        {
+          "id": "odin23x.walhalla_discord_channel_viewer.state.last_error",
+          "type": "text",
+          "desc": "Letzter Fehler",
+          "default": ""
+        },
+        {
+          "id": "odin23x.walhalla_discord_channel_viewer.state.debug",
+          "type": "text",
+          "desc": "Debug Info",
+          "default": ""
+        }
+      ],
+      "events": []
+    }
+  ]
+}
