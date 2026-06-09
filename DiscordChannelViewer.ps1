@@ -158,10 +158,11 @@ function Process-Settings {
     param($Items)
     $Script:UserCache = @{}
 
-    # Log raw JSON for diagnostics
+    # Log settings for diagnostics - mask token for security
     try {
         $raw = $Items | ConvertTo-Json -Compress -Depth 5
-        Write-Log "Raw settings JSON: $raw"
+        $masked = $raw -replace '"Discord Bot Token":"[^"]{10}[^"]*"', '"Discord Bot Token":"<masked>"'
+        Write-Log "Raw settings JSON: $masked"
     } catch {}
 
     # TP can send settings as array [{name,value}] OR as PSCustomObject {name:value}
@@ -351,11 +352,42 @@ function Invoke-DiscordPoll {
         "Content-Type"  = "application/json"
     }
 
+    # --- Step 1: Verify bot can access the guild at all ---
+    try {
+        $guildUrl  = "$ApiBase/guilds/$($Script:GuildId)"
+        $guildData = Invoke-RestMethod -Uri $guildUrl -Headers $headers -Method Get -ErrorAction Stop
+        Write-Log "Guild accessible: $($guildData.name)"
+        Set-State -Id $S_DEBUG -Val "Guild: $($guildData.name)"
+    } catch {
+        $err = $_.Exception.Message
+        if ($err -like "*403*" -or $err -like "*Unzul*" -or $err -like "*Forbidden*") {
+            $hint = "Bot ist nicht im Server! Bot mit /invite einladen oder neu hinzufuegen."
+            Set-State -Id $S_STATUS  -Val "Bot nicht im Server"
+            Set-State -Id $S_LASTERR -Val $hint
+            Set-State -Id $S_LASTCHK -Val (Get-Date -Format "HH:mm:ss")
+            Write-Log "GUILD ACCESS DENIED (403) - Bot is not in the server. Guild=$($Script:GuildId)"
+            return
+        } elseif ($err -like "*401*" -or $err -like "*Unauthorized*" -or $err -like "*Nicht autorisiert*") {
+            Set-State -Id $S_STATUS  -Val "Bot Token ungueltig"
+            Set-State -Id $S_LASTERR -Val "Bot Token ungueltig - bitte erneuern!"
+            Set-State -Id $S_LASTCHK -Val (Get-Date -Format "HH:mm:ss")
+            Write-Log "INVALID TOKEN (401)"
+            return
+        } else {
+            Set-State -Id $S_STATUS  -Val "API Fehler"
+            Set-State -Id $S_LASTERR -Val $err
+            Set-State -Id $S_LASTCHK -Val (Get-Date -Format "HH:mm:ss")
+            Write-Log "Guild check failed: $err"
+            return
+        }
+    }
+
+    # --- Step 2: Poll voice states ---
     try {
         Invoke-DiscordPollFull -Headers $headers
     } catch {
         $err = $_.Exception.Message
-        # 403 = bot lacks Administrator permission for the list endpoint -> use fallback
+        # 403 = bot lacks Administrator permission for list endpoint -> use fallback
         if ($err -like "*403*" -or $err -like "*Unzul*" -or $err -like "*Forbidden*") {
             Write-Log "403 on list endpoint - switching to fallback (bot needs Administrator)"
             Invoke-DiscordPollFallback -Headers $headers
