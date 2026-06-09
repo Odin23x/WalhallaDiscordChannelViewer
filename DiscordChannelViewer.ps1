@@ -270,7 +270,7 @@ function Connect-DiscordRPC {
             $p = New-Object System.IO.Pipes.NamedPipeClientStream(
                 ".", "discord-ipc-$i",
                 [System.IO.Pipes.PipeDirection]::InOut,
-                [System.IO.Pipes.PipeOptions]::Asynchronous)
+                [System.IO.Pipes.PipeOptions]::None)
             $p.Connect(1000)
             $Script:Pipe = $p
             Write-Log "Connected to discord-ipc-$i"
