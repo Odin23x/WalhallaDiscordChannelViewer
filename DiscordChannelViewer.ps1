@@ -41,6 +41,7 @@ $Script:ForceRefresh = $false
 $Script:AccessToken  = ""
 $Script:RefreshToken = ""
 $Script:RPCReady     = $false
+$Script:AuthFailed   = $false
 
 # TP TCP objects
 $Script:Tcp    = $null
@@ -337,17 +338,36 @@ function Invoke-TokenRefresh {
 function Invoke-TokenExchange {
     param([string]$Code)
     if ($Script:ClientSecret -eq "") { Write-Log "No client secret for exchange"; return "" }
+    $cid = [Uri]::EscapeDataString($Script:ClientId)
+    $cs  = [Uri]::EscapeDataString($Script:ClientSecret)
+    $c   = [Uri]::EscapeDataString($Code)
+
+    # Try 1: without redirect_uri (works for RPC pipe-based auth on some Discord versions)
     try {
-        $cid  = [Uri]::EscapeDataString($Script:ClientId)
-        $cs   = [Uri]::EscapeDataString($Script:ClientSecret)
-        $c    = [Uri]::EscapeDataString($Code)
-        $ruri = [Uri]::EscapeDataString("http://127.0.0.1")
-        $body = "client_id=$cid&client_secret=$cs&grant_type=authorization_code&code=$c&redirect_uri=$ruri"
+        $body = "client_id=$cid&client_secret=$cs&grant_type=authorization_code&code=$c"
         $resp = Invoke-RestMethod -Uri "https://discord.com/api/oauth2/token" -Method Post -Body $body -ContentType "application/x-www-form-urlencoded" -ErrorAction Stop
+        Write-Log "Token exchange OK (no redirect_uri)"
         Save-Token -Access $resp.access_token -Refresh $resp.refresh_token -ExpiresIn $resp.expires_in
         return $resp.access_token
     } catch {
-        Write-Log "Token exchange error: $($_.Exception.Message)"
+        Write-Log "Token exchange (no redirect_uri) failed: $($_.Exception.Message) - trying with redirect_uri..."
+    }
+
+    # Try 2: with redirect_uri http://127.0.0.1 (must be registered in Developer Portal)
+    try {
+        $ruri = [Uri]::EscapeDataString("http://127.0.0.1")
+        $body = "client_id=$cid&client_secret=$cs&grant_type=authorization_code&code=$c&redirect_uri=$ruri"
+        $resp = Invoke-RestMethod -Uri "https://discord.com/api/oauth2/token" -Method Post -Body $body -ContentType "application/x-www-form-urlencoded" -ErrorAction Stop
+        Write-Log "Token exchange OK (with redirect_uri)"
+        Save-Token -Access $resp.access_token -Refresh $resp.refresh_token -ExpiresIn $resp.expires_in
+        return $resp.access_token
+    } catch {
+        $err = $_.Exception.Message
+        Write-Log "Token exchange FAILED: $err"
+        Write-Log "FIX: Add http://127.0.0.1 as Redirect URI in Discord Developer Portal -> OAuth2"
+        $Script:AuthFailed = $true
+        Set-State -Id $S_STATUS  -Val "Auth fehlgeschlagen"
+        Set-State -Id $S_LASTERR -Val "401: Client Secret falsch ODER http://127.0.0.1 fehlt als Redirect URI im Developer Portal"
         return ""
     }
 }
@@ -561,7 +581,8 @@ while ($Script:Running) {
         } elseif ($t -eq "settings") {
             if ($null -ne $msg.values) { Process-Settings -Items $msg.values }
             Write-Log "TP settings updated - resetting RPC"
-            $Script:RPCReady = $false
+            $Script:RPCReady   = $false
+            $Script:AuthFailed = $false
             if ($null -ne $Script:Pipe) { try { $Script:Pipe.Dispose() } catch {}; $Script:Pipe = $null }
         } elseif ($t -eq "action") {
             if ($msg.actionId -eq "$PluginId.action.refresh") {
