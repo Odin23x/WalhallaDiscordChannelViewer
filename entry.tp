@@ -7,7 +7,7 @@
     "colorDark": "#23272A",
     "colorLight": "#7289DA"
   },
-  "plugin_start_cmd": "cmd.exe /c powershell.exe -ExecutionPolicy Bypass -File \"%TP_PLUGIN_FOLDER%DiscordChannelViewer.ps1\" 2>> \"%TP_PLUGIN_FOLDER%ps_errors.log\"",
+  "plugin_start_cmd": "powershell.exe -NonInteractive -ExecutionPolicy Bypass -File \"%TP_PLUGIN_FOLDER%DiscordChannelViewer.ps1\"",
   "settings": [
     {
       "name": "Application ID",
