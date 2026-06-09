@@ -36,12 +36,14 @@ $Script:ClientSecret  = ""
 $Script:CheckInterval = 5
 
 # Runtime
-$Script:Running      = $true
-$Script:ForceRefresh = $false
-$Script:AccessToken  = ""
-$Script:RefreshToken = ""
-$Script:RPCReady     = $false
-$Script:AuthFailed   = $false
+$Script:Running          = $true
+$Script:ForceRefresh     = $false
+$Script:AccessToken      = ""
+$Script:RefreshToken     = ""
+$Script:RPCReady         = $false
+$Script:AuthFailed       = $false
+$Script:LastConnectTry   = [DateTime]::MinValue
+$Script:ConnectBackoffSec = 15
 
 # TP TCP objects
 $Script:Tcp    = $null
@@ -201,12 +203,12 @@ function Read-PipeBytes {
 function Send-RPCFrame {
     param([int]$Opcode, [string]$Json)
     try {
-        $payload = [System.Text.Encoding]::UTF8.GetBytes($Json)
-        $header  = [byte[]]::new(8)
-        [System.BitConverter]::GetBytes([int32]$Opcode).CopyTo($header, 0)
-        [System.BitConverter]::GetBytes([int32]$payload.Length).CopyTo($header, 4)
-        $Script:Pipe.Write($header, 0, 8)
-        $Script:Pipe.Write($payload, 0, $payload.Length)
+        $payload  = [System.Text.Encoding]::UTF8.GetBytes($Json)
+        $combined = [byte[]]::new(8 + $payload.Length)
+        [System.BitConverter]::GetBytes([int32]$Opcode).CopyTo($combined, 0)
+        [System.BitConverter]::GetBytes([int32]$payload.Length).CopyTo($combined, 4)
+        [Array]::Copy($payload, 0, $combined, 8, $payload.Length)
+        $Script:Pipe.Write($combined, 0, $combined.Length)
         $Script:Pipe.Flush()
         return $true
     } catch {
@@ -268,7 +270,7 @@ function Connect-DiscordRPC {
             $p = New-Object System.IO.Pipes.NamedPipeClientStream(
                 ".", "discord-ipc-$i",
                 [System.IO.Pipes.PipeDirection]::InOut,
-                [System.IO.Pipes.PipeOptions]::None)
+                [System.IO.Pipes.PipeOptions]::Asynchronous)
             $p.Connect(1000)
             $Script:Pipe = $p
             Write-Log "Connected to discord-ipc-$i"
@@ -282,7 +284,7 @@ function Connect-DiscordRPC {
 function Invoke-Handshake {
     $hs = '{"v":1,"client_id":"' + $Script:ClientId + '"}'
     if (-not (Send-RPCFrame -Opcode $OP_HANDSHAKE -Json $hs)) { return $false }
-    $resp = Read-RPCFrame -TimeoutMs 5000
+    $resp = Read-RPCFrame -TimeoutMs 10000
     if ($null -ne $resp -and $resp.Data.evt -eq "READY") {
         Write-Log "RPC READY - Discord user: $($resp.Data.data.user.username)"
         return $true
@@ -474,19 +476,31 @@ function Invoke-DiscordPoll {
         return
     }
 
-    # Connect/reconnect if needed
+    # Connect/reconnect if needed - with backoff to avoid Discord rate limiting
     $needInit = $false
     if ($null -eq $Script:Pipe) { $needInit = $true }
     elseif (-not $Script:Pipe.IsConnected) { $needInit = $true }
     elseif (-not $Script:RPCReady) { $needInit = $true }
 
     if ($needInit) {
-        Write-Log "Initializing RPC connection..."
+        $secsSinceLastTry = ([DateTime]::Now - $Script:LastConnectTry).TotalSeconds
+        if ($secsSinceLastTry -lt [double]$Script:ConnectBackoffSec -and -not $Script:ForceRefresh) {
+            # Too soon to retry - wait for backoff
+            return
+        }
+        $Script:LastConnectTry = [DateTime]::Now
+        Write-Log "Initializing RPC connection (backoff: ${Script:ConnectBackoffSec}s)..."
         $ok = Initialize-RPCConnection
         if (-not $ok) {
+            # Increase backoff up to 60s on repeated failures
+            if ($Script:ConnectBackoffSec -lt 60) {
+                $Script:ConnectBackoffSec = $Script:ConnectBackoffSec + 15
+            }
             Set-State -Id $S_LASTCHK -Val (Get-Date -Format "HH:mm:ss")
             return
         }
+        # Reset backoff on success
+        $Script:ConnectBackoffSec = 15
     }
 
     # Send GET_SELECTED_VOICE_CHANNEL
@@ -581,8 +595,10 @@ while ($Script:Running) {
         } elseif ($t -eq "settings") {
             if ($null -ne $msg.values) { Process-Settings -Items $msg.values }
             Write-Log "TP settings updated - resetting RPC"
-            $Script:RPCReady   = $false
-            $Script:AuthFailed = $false
+            $Script:RPCReady          = $false
+            $Script:AuthFailed        = $false
+            $Script:ConnectBackoffSec = 15
+            $Script:LastConnectTry    = [DateTime]::MinValue
             if ($null -ne $Script:Pipe) { try { $Script:Pipe.Dispose() } catch {}; $Script:Pipe = $null }
         } elseif ($t -eq "action") {
             if ($msg.actionId -eq "$PluginId.action.refresh") {
