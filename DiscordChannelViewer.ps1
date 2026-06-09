@@ -132,30 +132,61 @@ function Read-TPMessage {
 # =============================================================
 # Settings
 # =============================================================
-function Process-Settings {
-    param($Items)
-    $Script:UserCache = @{}
-    foreach ($item in $Items) {
-        switch ($item.name) {
-            "Discord Bot Token" {
-                $Script:BotToken = [string]$item.value
-            }
-            "Discord Guild ID" {
-                $Script:GuildId = [string]$item.value
-            }
-            "Discord User ID" {
-                $Script:UserId = [string]$item.value
-            }
-            "Check Interval Seconds" {
-                $parsed = 5
-                if ([int]::TryParse([string]$item.value, [ref]$parsed)) {
-                    if ($parsed -lt 2) { $parsed = 2 }
-                    $Script:CheckInterval = $parsed
-                }
+function Apply-OneSetting {
+    param([string]$Name, [string]$Value)
+    switch ($Name) {
+        "Discord Bot Token" {
+            $Script:BotToken = $Value
+        }
+        "Discord Guild ID" {
+            $Script:GuildId = $Value
+        }
+        "Discord User ID" {
+            $Script:UserId = $Value
+        }
+        "Check Interval Seconds" {
+            $parsed = 5
+            if ([int]::TryParse($Value, [ref]$parsed)) {
+                if ($parsed -lt 2) { $parsed = 2 }
+                $Script:CheckInterval = $parsed
             }
         }
     }
-    Write-Log "Settings applied - Guild=$($Script:GuildId) User=$($Script:UserId) Interval=$($Script:CheckInterval)s"
+}
+
+function Process-Settings {
+    param($Items)
+    $Script:UserCache = @{}
+
+    # Log raw JSON for diagnostics
+    try {
+        $raw = $Items | ConvertTo-Json -Compress -Depth 5
+        Write-Log "Raw settings JSON: $raw"
+    } catch {}
+
+    # TP can send settings as array [{name,value}] OR as PSCustomObject {name:value}
+    if ($null -eq $Items) {
+        Write-Log "Settings: Items is null"
+        return
+    }
+
+    $isArray = ($Items -is [System.Object[]]) -or ($Items -is [System.Collections.IEnumerable] -and $Items -isnot [string])
+
+    if ($isArray) {
+        # Array format: [{name: "...", value: "..."}]
+        foreach ($item in $Items) {
+            if ($null -ne $item -and $null -ne $item.name) {
+                Apply-OneSetting -Name ([string]$item.name) -Value ([string]$item.value)
+            }
+        }
+    } else {
+        # Object/hashtable format: {"Discord Bot Token": "...", ...}
+        $Items.PSObject.Properties | ForEach-Object {
+            Apply-OneSetting -Name $_.Name -Value ([string]$_.Value)
+        }
+    }
+
+    Write-Log "Settings applied - Guild=$($Script:GuildId) User=$($Script:UserId) Interval=$($Script:CheckInterval)s TokenSet=$($Script:BotToken -ne '')"
 }
 
 # =============================================================
