@@ -1,6 +1,6 @@
 {
   "sdk": 6,
-  "version": 100,
+  "version": 200,
   "name": "WalhallaDiscordChannelViewer",
   "id": "odin23x.walhalla_discord_channel_viewer",
   "configuration": {
@@ -10,20 +10,15 @@
   "plugin_start_cmd": "powershell.exe -NonInteractive -ExecutionPolicy Bypass -File \"%TP_PLUGIN_FOLDER%DiscordChannelViewer.ps1\"",
   "settings": [
     {
-      "name": "Discord Bot Token",
+      "name": "Application ID",
+      "type": "text",
+      "default": "1513616012593991731"
+    },
+    {
+      "name": "Client Secret",
       "type": "text",
       "default": "",
       "isPassword": true
-    },
-    {
-      "name": "Discord Guild ID",
-      "type": "text",
-      "default": ""
-    },
-    {
-      "name": "Discord User ID",
-      "type": "text",
-      "default": ""
     },
     {
       "name": "Check Interval Seconds",
