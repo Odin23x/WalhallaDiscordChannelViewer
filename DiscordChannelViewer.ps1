@@ -123,6 +123,19 @@ function rrpc {
     catch { return $null }
 }
 
+function close-pipe {
+    if ($null -ne $script:Pipe) {
+        try {
+            if ($script:Pipe.IsConnected) {
+                srpc 2 '{"v":1,"code":1000,"message":"Normal closure"}' | Out-Null
+                Start-Sleep -Milliseconds 200
+            }
+        } catch {}
+        close-pipe
+    }
+    $script:RPend = $null
+}
+
 function pipe-connect {
     for ($i = 0; $i -le 9; $i++) {
         try {
@@ -216,7 +229,10 @@ function tick-rpc {
         "handshaking" {
             if ([DateTime]::Now -gt $script:RpcDeadline) {
                 wl "Handshake timeout"
+                close-pipe
                 $script:RpcState    = "idle"
+                # Increase wait on repeated failures (Discord IPC may need time to reset)
+                if ($script:ConnectWait -lt 60) { $script:ConnectWait += 15 }
                 $script:NextConnect = [DateTime]::Now.AddSeconds($script:ConnectWait)
                 return
             }
@@ -224,7 +240,8 @@ function tick-rpc {
             if ($null -eq $r) { return }
             if ($r.evt -eq "READY") {
                 wl "READY: $($r.data.user.username)"
-                $script:RpcState = "need_auth"
+                $script:ConnectWait = 15
+                $script:RpcState    = "need_auth"
             } elseif ($r.evt -eq "ERROR") {
                 wl "Handshake error: $($r.data.message)"
                 $script:RpcState    = "idle"
@@ -398,7 +415,7 @@ while ($script:Run) {
                 # Reset RPC on settings change
                 $script:RpcState    = "idle"
                 $script:NextConnect = [DateTime]::MinValue
-                if ($script:Pipe) { try { $script:Pipe.Dispose() } catch {}; $script:Pipe = $null }
+                if ($script:Pipe) { close-pipe }
             }
             "action" {
                 if ($msg.actionId -eq "$PluginId.action.refresh") {
@@ -434,6 +451,6 @@ while ($script:Run) {
 }
 
 wl "=== Stopping ==="
-try { if ($script:Pipe) { $script:Pipe.Dispose() } } catch {}
+close-pipe
 try { $script:Writer.Dispose() } catch {}
 try { $script:Tcp.Dispose()    } catch {}
