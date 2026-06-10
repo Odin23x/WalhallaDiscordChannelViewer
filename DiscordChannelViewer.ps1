@@ -1,6 +1,9 @@
 # DiscordChannelViewer.ps1 - v3 clean rewrite
 # WalhallaDiscordChannelViewer - PowerShell 5.1
 
+# Write to Desktop IMMEDIATELY - confirms script is running
+try { Add-Content -Path "$env:USERPROFILE\Desktop\WalhallaDC.log" -Value "[$(Get-Date -F 'HH:mm:ss')] Script started OK" -Encoding UTF8 } catch {}
+
 try { [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12 } catch {}
 
 $PluginId  = "odin23x.walhalla_discord_channel_viewer"
