@@ -161,7 +161,7 @@ function Connect-Discord {
     for ($i = 0; $i -le 9; $i++) {
         try {
             $p = New-Object System.IO.Pipes.NamedPipeClientStream(".", "discord-ipc-$i", [System.IO.Pipes.PipeDirection]::InOut, [System.IO.Pipes.PipeOptions]::None)
-            $p.Connect(1000)
+            $p.Connect(200)
             $script:Pipe = $p
             Write-Log "Pipe connected: discord-ipc-$i"
             return $true
@@ -178,7 +178,7 @@ function Init-RPC {
     }
     # Handshake
     if (-not (Send-RPC 0 ('{"v":1,"client_id":"' + $script:ClientId + '"}'))) { return $false }
-    $r = Read-RPC 10000
+    $r = Read-RPC 3000
     if ($null -eq $r -or $r.D.evt -ne "READY") { Write-Log "Handshake failed"; return $false }
     Write-Log "READY: $($r.D.data.user.username)"
     # Try stored token
@@ -201,7 +201,7 @@ function Init-RPC {
     if (-not (Send-RPC 1 ('{"cmd":"AUTHORIZE","args":{"client_id":"' + $script:ClientId + '","scopes":["rpc"]},"nonce":"' + $n + '"}'))) { return $false }
     Set-State "$PluginId.state.status" "Bitte Discord-Popup bestaetigen..."
     Write-Log "Waiting for authorization..."
-    $r = Read-RPC 60000
+    $r = Read-RPC 30000
     if ($r -and $r.D.cmd -eq "AUTHORIZE" -and $r.D.data.code) {
         $tok = Exchange-Token $r.D.data.code
         if ($tok) {
@@ -277,7 +277,7 @@ while ($script:Running) {
             foreach ($s in $msg.settings) {
                 $s.PSObject.Properties | ForEach-Object {
                     switch ($_.Name) {
-                        "Application ID"    { $script:ClientId = $_.Value }
+                        "Application ID"    { if ($_.Value -ne "") { $script:ClientId = $_.Value } }
                         "Client Secret"     { $script:Secret   = $_.Value }
                         "Discord Bot Token" { $script:Secret   = $_.Value }
                         "Check Interval Seconds" {
@@ -291,7 +291,7 @@ while ($script:Running) {
             foreach ($s in $msg.values) {
                 $s.PSObject.Properties | ForEach-Object {
                     switch ($_.Name) {
-                        "Application ID"    { $script:ClientId = $_.Value }
+                        "Application ID"    { if ($_.Value -ne "") { $script:ClientId = $_.Value } }
                         "Client Secret"     { $script:Secret   = $_.Value }
                         "Discord Bot Token" { $script:Secret   = $_.Value }
                         "Check Interval Seconds" {
