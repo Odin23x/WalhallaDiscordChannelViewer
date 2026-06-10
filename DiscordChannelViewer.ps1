@@ -245,8 +245,9 @@ function tick-rpc {
             # Non-blocking - just check if Discord responded
             $r = rrpc 100
             if ($null -eq $r) { return }
+            wl "Authorize pipe data: cmd=$($r.cmd) evt=$($r.evt)"
             if ($r.cmd -eq "AUTHORIZE" -and $r.data.code) {
-                wl "Auth code received"
+                wl "Auth code received (length=$($r.data.code.Length))"
                 ss "$PluginId.state.status" "Token wird abgerufen..."
                 $tok = exchange-tok $r.data.code
                 if ($tok) {
