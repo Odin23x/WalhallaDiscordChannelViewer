@@ -358,7 +358,7 @@ function tick-rpc {
                 }
                 ss "$PluginId.state.status"       "Online"
                 ss "$PluginId.state.my_channel"   $ch.name
-                ss "$PluginId.state.members"      ($names -join ", ")
+                ss "$PluginId.state.members"      ($names -join ([char]10))
                 ss "$PluginId.state.member_count" ([string]$names.Count)
                 wl "Channel: $($ch.name) | $($names.Count) Mitglieder: $($names -join ', ')"
             }
