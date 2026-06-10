@@ -277,7 +277,7 @@ while ($script:Running) {
             foreach ($s in $msg.settings) {
                 $s.PSObject.Properties | ForEach-Object {
                     switch ($_.Name) {
-                        "Application ID"    { if ($_.Value -ne "") { $script:ClientId = $_.Value } }
+                        "Application ID"    { if ($_.Value) { $script:ClientId = $_.Value } }
                         "Client Secret"     { $script:Secret   = $_.Value }
                         "Discord Bot Token" { $script:Secret   = $_.Value }
                         "Check Interval Seconds" {
@@ -291,7 +291,7 @@ while ($script:Running) {
             foreach ($s in $msg.values) {
                 $s.PSObject.Properties | ForEach-Object {
                     switch ($_.Name) {
-                        "Application ID"    { if ($_.Value -ne "") { $script:ClientId = $_.Value } }
+                        "Application ID"    { if ($_.Value) { $script:ClientId = $_.Value } }
                         "Client Secret"     { $script:Secret   = $_.Value }
                         "Discord Bot Token" { $script:Secret   = $_.Value }
                         "Check Interval Seconds" {
