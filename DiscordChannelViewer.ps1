@@ -64,7 +64,9 @@ function rtp {
 }
 
 # ---- Discord RPC pipe ----
-$script:Pipe = $null
+$script:Pipe  = $null
+$script:RPend = $null   # persistent pending BeginRead for header
+$script:RBuf  = $null   # buffer for pending read
 
 function srpc { param([int]$op, [string]$j)
     try {
@@ -79,41 +81,46 @@ function srpc { param([int]$op, [string]$j)
     } catch { wl "srpc fail: $($_.Exception.Message)"; return $false }
 }
 
-function rrpc { param([int]$ms = 100)
-    if ($null -eq $script:Pipe -or -not $script:Pipe.IsConnected) { return $null }
-    try {
-        $h  = New-Object System.Byte[] 8
-        $ar = $script:Pipe.BeginRead($h, 0, 8, $null, $null)
-        if (-not $ar.AsyncWaitHandle.WaitOne($ms)) { return $null }
-        $n  = $script:Pipe.EndRead($ar)
-        if ($n -le 0) { return $null }
-        # Read remaining header bytes if needed
-        $got = $n
-        $deadline = [DateTime]::Now.AddMilliseconds(500)
-        while ($got -lt 8) {
-            if ([DateTime]::Now -gt $deadline) { return $null }
-            $ar2 = $script:Pipe.BeginRead($h, $got, 8 - $got, $null, $null)
-            $ar2.AsyncWaitHandle.WaitOne(200) | Out-Null
-            $n2 = $script:Pipe.EndRead($ar2)
-            if ($n2 -le 0) { return $null }
-            $got += $n2
+function rrpc {
+    # Non-blocking: uses ONE persistent BeginRead to avoid concurrent read issues
+    if ($null -eq $script:Pipe -or -not $script:Pipe.IsConnected) {
+        $script:RPend = $null; return $null
+    }
+    # Start header read if none pending
+    if ($null -eq $script:RPend) {
+        $script:RBuf = New-Object System.Byte[] 8
+        try { $script:RPend = $script:Pipe.BeginRead($script:RBuf, 0, 8, $null, $null) }
+        catch { $script:RPend = $null; return $null }
+    }
+    # Non-blocking check: is header ready?
+    if (-not $script:RPend.IsCompleted) { return $null }
+    # Header arrived - read it
+    try { $n = $script:Pipe.EndRead($script:RPend) } catch { $script:RPend = $null; return $null }
+    $script:RPend = $null
+    if ($n -lt 8) { return $null }
+    $len = [System.BitConverter]::ToInt32($script:RBuf, 4)
+    if ($len -le 0 -or $len -gt 524288) { return $null }
+    # Read payload - blocking with 2s timeout (local pipe, should be instant)
+    $p    = New-Object System.Byte[] $len
+    $got  = 0
+    $dead = [DateTime]::Now.AddMilliseconds(2000)
+    while ($got -lt $len -and [DateTime]::Now -lt $dead) {
+        $pa = $script:Pipe.BeginRead($p, $got, $len - $got, $null, $null)
+        $left = [int]($dead - [DateTime]::Now).TotalMilliseconds
+        if ($left -le 0 -or -not $pa.AsyncWaitHandle.WaitOne($left)) {
+            # Payload timeout - connection broken, force reconnect
+            try { $pa.AsyncWaitHandle.WaitOne(0) | Out-Null; $script:Pipe.EndRead($pa) } catch {}
+            try { $script:Pipe.Dispose() } catch {}
+            $script:Pipe = $null
+            return $null
         }
-        $len = [System.BitConverter]::ToInt32($h, 4)
-        if ($len -le 0 -or $len -gt 524288) { return $null }
-        $p   = New-Object System.Byte[] $len
-        $got = 0
-        $deadline = [DateTime]::Now.AddMilliseconds(1000)
-        while ($got -lt $len) {
-            if ([DateTime]::Now -gt $deadline) { break }
-            $ar3 = $script:Pipe.BeginRead($p, $got, $len - $got, $null, $null)
-            $ar3.AsyncWaitHandle.WaitOne(500) | Out-Null
-            $n3 = $script:Pipe.EndRead($ar3)
-            if ($n3 -le 0) { break }
-            $got += $n3
-        }
-        $json = [System.Text.Encoding]::UTF8.GetString($p, 0, $got)
-        return ($json | ConvertFrom-Json)
-    } catch { return $null }
+        $pn = $script:Pipe.EndRead($pa)
+        if ($pn -le 0) { break }
+        $got += $pn
+    }
+    if ($got -lt $len) { return $null }
+    try { return ([System.Text.Encoding]::UTF8.GetString($p, 0, $got) | ConvertFrom-Json) }
+    catch { return $null }
 }
 
 function pipe-connect {
@@ -195,6 +202,7 @@ function tick-rpc {
             if ([DateTime]::Now -lt $script:NextConnect) { return }
             ss "$PluginId.state.debug" "Connecting..."
             if (pipe-connect) {
+                $script:RPend = $null
                 srpc 0 ('{"v":1,"client_id":"' + $script:ClientId + '"}') | Out-Null
                 $script:RpcState    = "handshaking"
                 $script:RpcDeadline = [DateTime]::Now.AddSeconds(3)
