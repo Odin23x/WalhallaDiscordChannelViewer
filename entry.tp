@@ -7,7 +7,7 @@
     "colorDark": "#23272A",
     "colorLight": "#7289DA"
   },
-  "plugin_start_cmd": "powershell.exe -NonInteractive -ExecutionPolicy Bypass -File \"%APPDATA%\\TouchPortal\\plugins\\DiscordChannelViewer.ps1\"",
+  "plugin_start_cmd": "\"%TP_PLUGIN_FOLDER%start.bat\"",
   "settings": [
     {
       "name": "Application ID",
