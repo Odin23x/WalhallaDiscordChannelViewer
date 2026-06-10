@@ -364,6 +364,12 @@ function tick-rpc {
             }
             ss "$PluginId.state.last_check" (Get-Date -F "HH:mm:ss")
             ss "$PluginId.state.last_error" ""
+            # Update HTML overlay
+            if ($null -eq $ch -or $null -eq $ch.id) {
+                Write-Overlay -Ch "Nicht verbunden" -Mbrs @() -Stat "Online"
+            } else {
+                Write-Overlay -Ch $ch.name -Mbrs $names -Stat "Online"
+            }
             $script:RpcState = "ready"   # Back to ready for next poll
         }
         "failed" {
@@ -372,6 +378,41 @@ function tick-rpc {
     }
 }
 
+
+# ---- HTML Overlay Generator ----
+function Write-Overlay {
+    param([string]$Ch, [string[]]$Mbrs, [string]$Stat)
+    try {
+        $memberRows = ""
+        foreach ($m in $Mbrs) {
+            if ($m -ne "") {
+                $escaped = $m -replace '&','&amp;' -replace '<','&lt;' -replace '>','&gt;'
+                $memberRows += "<div class=`"member`"><span class=`"dot`"></span>$escaped</div>`n"
+            }
+        }
+        $chEsc = $Ch -replace '&','&amp;' -replace '<','&lt;' -replace '>','&gt;'
+        $html = @"
+<!DOCTYPE html>
+<html><head>
+<meta charset="UTF-8">
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+body{background:transparent;font-family:'Whitney','Helvetica Neue',Arial,sans-serif;padding:10px}
+.box{background:rgba(30,31,34,.88);border-radius:10px;padding:12px 14px;border-left:4px solid #5865F2;min-width:180px;max-width:280px;backdrop-filter:blur(4px)}
+.lbl{font-size:9px;text-transform:uppercase;letter-spacing:.08em;color:#8E9297;margin-bottom:3px}
+.ch{font-size:15px;font-weight:700;color:#E3E5E8;margin-bottom:8px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.member{font-size:12px;color:#B9BBBE;padding:2px 0;display:flex;align-items:center;gap:7px}
+.dot{width:8px;height:8px;border-radius:50%;background:#57F287;flex-shrink:0}
+</style></head>
+<body><div class="box">
+<div class="lbl">Voice Channel</div>
+<div class="ch">$chEsc</div>
+$memberRows
+</div></body></html>
+"@
+        Set-Content -Path "$LogDir\overlay.html" -Value $html -Encoding UTF8
+    } catch {}
+}
 # ---- Settings ----
 $script:ClientId     = "1513616012593991731"
 $script:Secret       = ""
