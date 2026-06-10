@@ -293,25 +293,34 @@ function tick-rpc {
             }
         }
         "ready" {
-            # Check pipe still alive
+            # Send GET_SELECTED_VOICE_CHANNEL - response handled in waiting_voice
             if ($null -eq $script:Pipe -or -not $script:Pipe.IsConnected) {
                 wl "Pipe disconnected"
                 $script:RpcState    = "idle"
                 $script:NextConnect = [DateTime]::Now.AddSeconds(5)
+                $script:RPend       = $null
                 return
             }
-            # Get voice channel
             $n = [System.Guid]::NewGuid().ToString("N")
-            if (-not (srpc 1 ('{"cmd":"GET_SELECTED_VOICE_CHANNEL","args":{},"nonce":"' + $n + '"}'))) {
-                $script:RpcState = "idle"
+            if (srpc 1 ('{"cmd":"GET_SELECTED_VOICE_CHANNEL","args":{},"nonce":"' + $n + '"}')) {
+                $script:RpcState    = "waiting_voice"
+                $script:RpcDeadline = [DateTime]::Now.AddSeconds(3)
+            } else {
+                $script:RpcState    = "idle"
+                $script:NextConnect = [DateTime]::Now.AddSeconds(5)
+            }
+        }
+        "waiting_voice" {
+            # Poll for GET_SELECTED_VOICE_CHANNEL response (non-blocking)
+            if ([DateTime]::Now -gt $script:RpcDeadline) {
+                wl "Voice response timeout"
+                $script:RpcState    = "idle"
+                $script:NextConnect = [DateTime]::Now.AddSeconds(5)
+                $script:RPend       = $null
                 return
             }
-            $r = rrpc 2000
-            if ($null -eq $r) {
-                $script:RpcState = "idle"
-                wl "No response to GET_SELECTED_VOICE_CHANNEL"
-                return
-            }
+            $r = rrpc
+            if ($null -eq $r) { return }   # Not arrived yet, try next tick
             $ch = $r.data
             if ($null -eq $ch -or $null -eq $ch.id) {
                 ss "$PluginId.state.status"       "Online"
@@ -334,9 +343,11 @@ function tick-rpc {
                 ss "$PluginId.state.my_channel"   $ch.name
                 ss "$PluginId.state.members"      ($names -join ", ")
                 ss "$PluginId.state.member_count" ([string]$names.Count)
+                wl "Channel: $($ch.name) | $($names.Count) Mitglieder: $($names -join ', ')"
             }
             ss "$PluginId.state.last_check" (Get-Date -F "HH:mm:ss")
             ss "$PluginId.state.last_error" ""
+            $script:RpcState = "ready"   # Back to ready for next poll
         }
         "failed" {
             ss "$PluginId.state.status" "Auth fehlgeschlagen"
@@ -411,9 +422,9 @@ while ($script:Run) {
     # Tick RPC state machine (non-blocking, max ~300ms per tick)
     if ($script:Secret -ne "") {
         $elapsed = ([DateTime]::Now - $last).TotalSeconds
-        if ($elapsed -ge $script:PollInterval -or $script:RpcState -eq "authorizing" -or $script:RpcState -eq "handshaking" -or $script:RpcState -eq "authenticating") {
+        if ($elapsed -ge $script:PollInterval -or $script:RpcState -eq "authorizing" -or $script:RpcState -eq "handshaking" -or $script:RpcState -eq "authenticating" -or $script:RpcState -eq "waiting_voice") {
             tick-rpc
-            if ($script:RpcState -eq "ready") { $last = [DateTime]::Now }
+            if ($script:RpcState -eq "ready" -or $script:RpcState -eq "idle" -or $script:RpcState -eq "failed") { $last = [DateTime]::Now }
         }
     } else {
         ss "$PluginId.state.status" "Client Secret fehlt"
