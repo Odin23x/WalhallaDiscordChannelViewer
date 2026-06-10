@@ -1,321 +1,419 @@
-# DiscordChannelViewer.ps1 - v3 clean rewrite
+# DiscordChannelViewer.ps1 - v4 state machine (non-blocking)
 # WalhallaDiscordChannelViewer - PowerShell 5.1
 
-# Write to Desktop IMMEDIATELY - confirms script is running
-try { Add-Content -Path "$env:USERPROFILE\Desktop\WalhallaDC.log" -Value "[$(Get-Date -F 'HH:mm:ss')] Script started OK" -Encoding UTF8 } catch {}
+# Desktop diagnostic - first thing always
+try { Add-Content "$env:USERPROFILE\Desktop\WalhallaDC.log" "[$(Get-Date -F 'HH:mm:ss')] v4 start" -Encoding UTF8 } catch {}
 
 try { [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12 } catch {}
 
-$PluginId  = "odin23x.walhalla_discord_channel_viewer"
-$TPPort    = 12136
-$LogFile   = "$env:APPDATA\TouchPortal\plugins\WalhallaDiscordChannelViewer\plugin.log"
-$TokenFile = "$env:APPDATA\TouchPortal\plugins\WalhallaDiscordChannelViewer\rpc_token.json"
+$PluginId = "odin23x.walhalla_discord_channel_viewer"
+$TPPort   = 12136
+$LogDir   = "$env:APPDATA\TouchPortal\plugins\WalhallaDiscordChannelViewer"
+$LogFile  = "$LogDir\plugin.log"
+$TokFile  = "$LogDir\rpc_token.json"
 
-# Write log - also to Desktop as fallback
-function Write-Log { param([string]$M)
-    $l = "[$(Get-Date -Format 'HH:mm:ss')] $M"
-    try { Add-Content -Path $LogFile -Value $l -Encoding UTF8 -ErrorAction Stop } catch {
-        try { Add-Content -Path "$env:USERPROFILE\Desktop\WalhallaDC.log" -Value $l -Encoding UTF8 } catch {}
+function wl { param([string]$m)
+    $l = "[$(Get-Date -F 'HH:mm:ss')] $m"
+    try { Add-Content $LogFile $l -Encoding UTF8 } catch {
+        try { Add-Content "$env:USERPROFILE\Desktop\WalhallaDC.log" $l -Encoding UTF8 } catch {}
     }
 }
 
-Write-Log "=== v3 starting ==="
+wl "=== v4 starting ==="
 
-# TP connection
-$Tcp = $null; $Stream = $null; $Writer = $null; $Reader = $null
+# ---- TP socket ----
+$script:Tcp    = $null
+$script:Stream = $null
+$script:Writer = $null
+$script:Reader = $null
+$script:Run    = $true
 
 function Connect-TP {
     try {
-        $script:Tcp = New-Object System.Net.Sockets.TcpClient
+        $script:Tcp    = New-Object System.Net.Sockets.TcpClient
         $script:Tcp.Connect("127.0.0.1", $TPPort)
         $script:Stream = $script:Tcp.GetStream()
-        $enc = New-Object System.Text.UTF8Encoding($false)
+        $enc           = New-Object System.Text.UTF8Encoding($false)
         $script:Writer = New-Object System.IO.StreamWriter($script:Stream, $enc)
         $script:Writer.AutoFlush = $true
         $script:Reader = New-Object System.IO.StreamReader($script:Stream, $enc)
         $script:Writer.WriteLine('{"type":"pair","id":"' + $PluginId + '"}')
-        Write-Log "TP connected"
+        wl "TP connected"
         return $true
-    } catch { Write-Log "TP connect error: $($_.Exception.Message)"; return $false }
+    } catch { wl "TP connect fail: $($_.Exception.Message)"; return $false }
 }
 
-function Send-TP { param([string]$J)
-    try { $script:Writer.WriteLine($J) } catch { $script:Running = $false }
+function stp { param([string]$j)
+    try { $script:Writer.WriteLine($j) }
+    catch { wl "Send fail: $($_.Exception.Message)"; $script:Run = $false }
 }
 
-function Set-State { param([string]$Id, [string]$Val)
-    Send-TP ('{"type":"stateUpdate","id":"' + $Id + '","value":' + ($Val | ConvertTo-Json) + '}')
+function ss { param([string]$id, [string]$v)
+    stp ('{"type":"stateUpdate","id":"' + $id + '","value":' + ($v | ConvertTo-Json) + '}')
 }
 
-function Read-TP {
+function rtp {
     try {
-        if ($null -eq $script:Tcp -or -not $script:Tcp.Connected) { $script:Running = $false; return $null }
+        if ($null -eq $script:Tcp -or -not $script:Tcp.Connected) { $script:Run = $false; return $null }
         if ($script:Stream.DataAvailable) {
-            $line = $script:Reader.ReadLine()
-            if ($line) { try { return ($line | ConvertFrom-Json) } catch {} }
+            $ln = $script:Reader.ReadLine()
+            if ($ln) { try { return ($ln | ConvertFrom-Json) } catch {} }
         }
-    } catch { $script:Running = $false }
+    } catch { $script:Run = $false }
     return $null
 }
 
-# RPC pipe
-$Pipe = $null
+# ---- Discord RPC pipe ----
+$script:Pipe = $null
 
-function Send-RPC { param([int]$Op, [string]$J)
+function srpc { param([int]$op, [string]$j)
     try {
-        $b = [System.Text.Encoding]::UTF8.GetBytes($J)
-        $c = [byte[]]::new(8 + $b.Length)
-        [System.BitConverter]::GetBytes([int32]$Op).CopyTo($c, 0)
-        [System.BitConverter]::GetBytes([int32]$b.Length).CopyTo($c, 4)
-        [Array]::Copy($b, 0, $c, 8, $b.Length)
-        $script:Pipe.Write($c, 0, $c.Length)
+        $b  = [System.Text.Encoding]::UTF8.GetBytes($j)
+        $cb = New-Object System.Byte[] (8 + $b.Length)
+        [System.BitConverter]::GetBytes([int32]$op).CopyTo($cb, 0)
+        [System.BitConverter]::GetBytes([int32]$b.Length).CopyTo($cb, 4)
+        [Array]::Copy($b, 0, $cb, 8, $b.Length)
+        $script:Pipe.Write($cb, 0, $cb.Length)
         $script:Pipe.Flush()
         return $true
-    } catch { Write-Log "Send-RPC: $($_.Exception.Message)"; return $false }
+    } catch { wl "srpc fail: $($_.Exception.Message)"; return $false }
 }
 
-function Read-RPC { param([int]$Ms = 5000)
+function rrpc { param([int]$ms = 100)
+    if ($null -eq $script:Pipe -or -not $script:Pipe.IsConnected) { return $null }
     try {
-        $h = [byte[]]::new(8); $got = 0
-        $dead = [DateTime]::Now.AddMilliseconds($Ms)
+        $h  = New-Object System.Byte[] 8
+        $ar = $script:Pipe.BeginRead($h, 0, 8, $null, $null)
+        if (-not $ar.AsyncWaitHandle.WaitOne($ms)) { return $null }
+        $n  = $script:Pipe.EndRead($ar)
+        if ($n -le 0) { return $null }
+        # Read remaining header bytes if needed
+        $got = $n
+        $deadline = [DateTime]::Now.AddMilliseconds(500)
         while ($got -lt 8) {
-            $left = [int]($dead - [DateTime]::Now).TotalMilliseconds
-            if ($left -le 0) { return $null }
-            $ar = $script:Pipe.BeginRead($h, $got, 8 - $got, $null, $null)
-            if (-not $ar.AsyncWaitHandle.WaitOne($left)) { return $null }
-            $n = $script:Pipe.EndRead($ar)
-            if ($n -le 0) { return $null }
-            $got += $n
+            if ([DateTime]::Now -gt $deadline) { return $null }
+            $ar2 = $script:Pipe.BeginRead($h, $got, 8 - $got, $null, $null)
+            $ar2.AsyncWaitHandle.WaitOne(200) | Out-Null
+            $n2 = $script:Pipe.EndRead($ar2)
+            if ($n2 -le 0) { return $null }
+            $got += $n2
         }
-        $op  = [System.BitConverter]::ToInt32($h, 0)
         $len = [System.BitConverter]::ToInt32($h, 4)
         if ($len -le 0 -or $len -gt 524288) { return $null }
-        $p = [byte[]]::new($len); $got = 0
+        $p   = New-Object System.Byte[] $len
+        $got = 0
+        $deadline = [DateTime]::Now.AddMilliseconds(1000)
         while ($got -lt $len) {
-            $left = [int]($dead - [DateTime]::Now).TotalMilliseconds
-            if ($left -le 0) { break }
-            $ar = $script:Pipe.BeginRead($p, $got, $len - $got, $null, $null)
-            if (-not $ar.AsyncWaitHandle.WaitOne($left)) { break }
-            $n = $script:Pipe.EndRead($ar)
-            if ($n -le 0) { break }
-            $got += $n
+            if ([DateTime]::Now -gt $deadline) { break }
+            $ar3 = $script:Pipe.BeginRead($p, $got, $len - $got, $null, $null)
+            $ar3.AsyncWaitHandle.WaitOne(500) | Out-Null
+            $n3 = $script:Pipe.EndRead($ar3)
+            if ($n3 -le 0) { break }
+            $got += $n3
         }
         $json = [System.Text.Encoding]::UTF8.GetString($p, 0, $got)
-        return @{ Op = $op; D = ($json | ConvertFrom-Json) }
+        return ($json | ConvertFrom-Json)
     } catch { return $null }
 }
 
-function Save-Token { param([string]$A, [string]$R, [int]$E)
-    @{ access_token=$A; refresh_token=$R; expires_at=([DateTime]::UtcNow.AddSeconds($E).ToString("o")) } |
-        ConvertTo-Json | Set-Content -Path $TokenFile -Encoding UTF8
+function pipe-connect {
+    for ($i = 0; $i -le 9; $i++) {
+        try {
+            $p = New-Object System.IO.Pipes.NamedPipeClientStream(".", "discord-ipc-$i",
+                [System.IO.Pipes.PipeDirection]::InOut, [System.IO.Pipes.PipeOptions]::None)
+            $p.Connect(100)
+            $script:Pipe = $p
+            wl "Pipe: discord-ipc-$i"
+            return $true
+        } catch {}
+    }
+    return $false
 }
 
-function Get-Token {
-    if (-not (Test-Path $TokenFile)) { return $null }
+# ---- Token storage ----
+function save-tok { param([string]$a,[string]$r,[int]$e)
+    @{access_token=$a;refresh_token=$r;expires_at=([DateTime]::UtcNow.AddSeconds($e).ToString("o"))} |
+        ConvertTo-Json | Set-Content $TokFile -Encoding UTF8
+}
+
+function get-tok {
+    if (-not (Test-Path $TokFile)) { return $null }
     try {
-        $d = Get-Content $TokenFile -Raw | ConvertFrom-Json
+        $d = Get-Content $TokFile -Raw | ConvertFrom-Json
         if (-not $d.access_token) { return $null }
         if ($d.expires_at -and [DateTime]::UtcNow -gt [DateTime]::Parse($d.expires_at).AddMinutes(-5)) {
-            return Refresh-Token $d.refresh_token
+            # Refresh
+            try {
+                $b = "client_id=$([Uri]::EscapeDataString($script:ClientId))&client_secret=$([Uri]::EscapeDataString($script:Secret))&grant_type=refresh_token&refresh_token=$([Uri]::EscapeDataString($d.refresh_token))"
+                $r = Invoke-RestMethod "https://discord.com/api/oauth2/token" -Method Post -Body $b -ContentType "application/x-www-form-urlencoded" -ErrorAction Stop
+                save-tok $r.access_token $r.refresh_token $r.expires_in
+                return @{access_token=$r.access_token}
+            } catch { return $null }
         }
         return $d
     } catch { return $null }
 }
 
-function Refresh-Token { param([string]$R)
-    try {
-        $b = "client_id=$([Uri]::EscapeDataString($script:ClientId))&client_secret=$([Uri]::EscapeDataString($script:Secret))&grant_type=refresh_token&refresh_token=$([Uri]::EscapeDataString($R))"
-        $r = Invoke-RestMethod -Uri "https://discord.com/api/oauth2/token" -Method Post -Body $b -ContentType "application/x-www-form-urlencoded" -ErrorAction Stop
-        Save-Token $r.access_token $r.refresh_token $r.expires_in
-        return @{ access_token=$r.access_token; refresh_token=$r.refresh_token }
-    } catch { Write-Log "Refresh error: $($_.Exception.Message)"; return $null }
-}
-
-function Exchange-Token { param([string]$Code)
+function exchange-tok { param([string]$code)
     $cid = [Uri]::EscapeDataString($script:ClientId)
     $cs  = [Uri]::EscapeDataString($script:Secret)
-    $c   = [Uri]::EscapeDataString($Code)
-    # Try without redirect_uri first
+    $c   = [Uri]::EscapeDataString($code)
     try {
-        $r = Invoke-RestMethod -Uri "https://discord.com/api/oauth2/token" -Method Post -Body "client_id=$cid&client_secret=$cs&grant_type=authorization_code&code=$c" -ContentType "application/x-www-form-urlencoded" -ErrorAction Stop
-        Save-Token $r.access_token $r.refresh_token $r.expires_in
-        Write-Log "Token OK (no redirect_uri)"
+        $r = Invoke-RestMethod "https://discord.com/api/oauth2/token" -Method Post `
+            -Body "client_id=$cid&client_secret=$cs&grant_type=authorization_code&code=$c" `
+            -ContentType "application/x-www-form-urlencoded" -ErrorAction Stop
+        save-tok $r.access_token $r.refresh_token $r.expires_in
+        wl "Token OK (no redirect_uri)"
         return $r.access_token
     } catch {}
-    # Try with redirect_uri
     try {
         $ru = [Uri]::EscapeDataString("http://127.0.0.1")
-        $r = Invoke-RestMethod -Uri "https://discord.com/api/oauth2/token" -Method Post -Body "client_id=$cid&client_secret=$cs&grant_type=authorization_code&code=$c&redirect_uri=$ru" -ContentType "application/x-www-form-urlencoded" -ErrorAction Stop
-        Save-Token $r.access_token $r.refresh_token $r.expires_in
-        Write-Log "Token OK (with redirect_uri)"
+        $r = Invoke-RestMethod "https://discord.com/api/oauth2/token" -Method Post `
+            -Body "client_id=$cid&client_secret=$cs&grant_type=authorization_code&code=$c&redirect_uri=$ru" `
+            -ContentType "application/x-www-form-urlencoded" -ErrorAction Stop
+        save-tok $r.access_token $r.refresh_token $r.expires_in
+        wl "Token OK (with redirect_uri)"
         return $r.access_token
     } catch {
-        Write-Log "Token exchange FAILED: $($_.Exception.Message)"
-        $script:AuthFailed = $true
-        Set-State "$PluginId.state.last_error" "401: Client Secret falsch ODER http://127.0.0.1 als Redirect URI im Developer Portal fehlt"
+        wl "Token exchange FAILED: $($_.Exception.Message)"
+        ss "$PluginId.state.last_error" "401: Client Secret falsch ODER http://127.0.0.1 als Redirect URI im Developer Portal fehlt"
         return ""
     }
 }
 
-function Connect-Discord {
-    for ($i = 0; $i -le 9; $i++) {
-        try {
-            $p = New-Object System.IO.Pipes.NamedPipeClientStream(".", "discord-ipc-$i", [System.IO.Pipes.PipeDirection]::InOut, [System.IO.Pipes.PipeOptions]::None)
-            $p.Connect(200)
-            $script:Pipe = $p
-            Write-Log "Pipe connected: discord-ipc-$i"
-            return $true
-        } catch {}
-    }
-    Write-Log "No Discord pipe found"
-    return $false
-}
+# ---- RPC State machine ----
+# States: idle | connecting | handshaking | need_auth | authorizing | authenticating | ready | failed
+$script:RpcState    = "idle"
+$script:RpcDeadline = [DateTime]::MinValue
+$script:AccessToken = ""
+$script:NextConnect = [DateTime]::MinValue
+$script:ConnectWait = 15
 
-function Init-RPC {
-    if (-not (Connect-Discord)) {
-        Set-State "$PluginId.state.status" "Discord nicht gefunden"
-        return $false
-    }
-    # Handshake
-    if (-not (Send-RPC 0 ('{"v":1,"client_id":"' + $script:ClientId + '"}'))) { return $false }
-    $r = Read-RPC 3000
-    if ($null -eq $r -or $r.D.evt -ne "READY") { Write-Log "Handshake failed"; return $false }
-    Write-Log "READY: $($r.D.data.user.username)"
-    # Try stored token
-    $t = Get-Token
-    if ($t) {
-        $n = [System.Guid]::NewGuid().ToString("N")
-        if (Send-RPC 1 ('{"cmd":"AUTHENTICATE","args":{"access_token":"' + $t.access_token + '"},"nonce":"' + $n + '"}')) {
-            $r = Read-RPC 5000
-            if ($r -and $r.D.cmd -eq "AUTHENTICATE" -and -not $r.D.evt) {
-                Write-Log "Auth OK (stored token)"
-                return $true
+function tick-rpc {
+    switch ($script:RpcState) {
+        "idle" {
+            if ([DateTime]::Now -lt $script:NextConnect) { return }
+            ss "$PluginId.state.debug" "Connecting..."
+            if (pipe-connect) {
+                srpc 0 ('{"v":1,"client_id":"' + $script:ClientId + '"}') | Out-Null
+                $script:RpcState    = "handshaking"
+                $script:RpcDeadline = [DateTime]::Now.AddSeconds(3)
+                wl "Handshake sent"
+            } else {
+                ss "$PluginId.state.status" "Discord nicht gefunden"
+                $script:NextConnect = [DateTime]::Now.AddSeconds($script:ConnectWait)
+                if ($script:ConnectWait -lt 60) { $script:ConnectWait += 15 }
             }
         }
-        Write-Log "Stored token rejected"
-        try { Remove-Item $TokenFile -Force } catch {}
-    }
-    # Authorize
-    if ($script:AuthFailed) { return $false }
-    $n = [System.Guid]::NewGuid().ToString("N")
-    if (-not (Send-RPC 1 ('{"cmd":"AUTHORIZE","args":{"client_id":"' + $script:ClientId + '","scopes":["rpc"]},"nonce":"' + $n + '"}'))) { return $false }
-    Set-State "$PluginId.state.status" "Bitte Discord-Popup bestaetigen..."
-    Write-Log "Waiting for authorization..."
-    $r = Read-RPC 30000
-    if ($r -and $r.D.cmd -eq "AUTHORIZE" -and $r.D.data.code) {
-        $tok = Exchange-Token $r.D.data.code
-        if ($tok) {
+        "handshaking" {
+            if ([DateTime]::Now -gt $script:RpcDeadline) {
+                wl "Handshake timeout"
+                $script:RpcState    = "idle"
+                $script:NextConnect = [DateTime]::Now.AddSeconds($script:ConnectWait)
+                return
+            }
+            $r = rrpc 200
+            if ($null -eq $r) { return }
+            if ($r.evt -eq "READY") {
+                wl "READY: $($r.data.user.username)"
+                $script:RpcState = "need_auth"
+            } elseif ($r.evt -eq "ERROR") {
+                wl "Handshake error: $($r.data.message)"
+                $script:RpcState    = "idle"
+                $script:NextConnect = [DateTime]::Now.AddSeconds($script:ConnectWait)
+            }
+        }
+        "need_auth" {
+            $t = get-tok
+            if ($t) {
+                $script:AccessToken = $t.access_token
+                $n = [System.Guid]::NewGuid().ToString("N")
+                srpc 1 ('{"cmd":"AUTHENTICATE","args":{"access_token":"' + $script:AccessToken + '"},"nonce":"' + $n + '"}') | Out-Null
+                $script:RpcState    = "authenticating"
+                $script:RpcDeadline = [DateTime]::Now.AddSeconds(3)
+                wl "Authenticating with stored token..."
+            } else {
+                $n = [System.Guid]::NewGuid().ToString("N")
+                srpc 1 ('{"cmd":"AUTHORIZE","args":{"client_id":"' + $script:ClientId + '","scopes":["rpc"]},"nonce":"' + $n + '"}') | Out-Null
+                $script:RpcState = "authorizing"
+                ss "$PluginId.state.status" "Discord-Popup bestaetigen!"
+                ss "$PluginId.state.debug"  "Warte auf Autorisierung in Discord..."
+                wl "AUTHORIZE sent - waiting for user to click in Discord"
+            }
+        }
+        "authorizing" {
+            # Non-blocking - just check if Discord responded
+            $r = rrpc 100
+            if ($null -eq $r) { return }
+            if ($r.cmd -eq "AUTHORIZE" -and $r.data.code) {
+                wl "Auth code received"
+                ss "$PluginId.state.status" "Token wird abgerufen..."
+                $tok = exchange-tok $r.data.code
+                if ($tok) {
+                    $script:AccessToken = $tok
+                    $n = [System.Guid]::NewGuid().ToString("N")
+                    srpc 1 ('{"cmd":"AUTHENTICATE","args":{"access_token":"' + $tok + '"},"nonce":"' + $n + '"}') | Out-Null
+                    $script:RpcState    = "authenticating"
+                    $script:RpcDeadline = [DateTime]::Now.AddSeconds(3)
+                } else {
+                    $script:RpcState = "failed"
+                }
+            }
+        }
+        "authenticating" {
+            if ([DateTime]::Now -gt $script:RpcDeadline) {
+                wl "Auth timeout - removing stored token"
+                try { Remove-Item $TokFile -Force } catch {}
+                $script:RpcState    = "idle"
+                $script:NextConnect = [DateTime]::Now.AddSeconds(5)
+                return
+            }
+            $r = rrpc 200
+            if ($null -eq $r) { return }
+            if ($r.cmd -eq "AUTHENTICATE" -and -not $r.evt) {
+                wl "Authenticated OK"
+                $script:RpcState    = "ready"
+                $script:ConnectWait = 15
+                ss "$PluginId.state.status" "Online"
+                ss "$PluginId.state.last_error" ""
+            } elseif ($r.evt -eq "ERROR") {
+                wl "Auth failed: $($r.data.message)"
+                try { Remove-Item $TokFile -Force } catch {}
+                $script:RpcState    = "idle"
+                $script:NextConnect = [DateTime]::Now.AddSeconds(5)
+            }
+        }
+        "ready" {
+            # Check pipe still alive
+            if ($null -eq $script:Pipe -or -not $script:Pipe.IsConnected) {
+                wl "Pipe disconnected"
+                $script:RpcState    = "idle"
+                $script:NextConnect = [DateTime]::Now.AddSeconds(5)
+                return
+            }
+            # Get voice channel
             $n = [System.Guid]::NewGuid().ToString("N")
-            Send-RPC 1 ('{"cmd":"AUTHENTICATE","args":{"access_token":"' + $tok + '"},"nonce":"' + $n + '"}') | Out-Null
-            $r = Read-RPC 5000
-            if ($r -and $r.D.cmd -eq "AUTHENTICATE" -and -not $r.D.evt) {
-                Write-Log "Auth OK (new token)"
-                return $true
+            if (-not (srpc 1 ('{"cmd":"GET_SELECTED_VOICE_CHANNEL","args":{},"nonce":"' + $n + '"}'))) {
+                $script:RpcState = "idle"
+                return
             }
+            $r = rrpc 2000
+            if ($null -eq $r) {
+                $script:RpcState = "idle"
+                wl "No response to GET_SELECTED_VOICE_CHANNEL"
+                return
+            }
+            $ch = $r.data
+            if ($null -eq $ch -or $null -eq $ch.id) {
+                ss "$PluginId.state.status"       "Online"
+                ss "$PluginId.state.my_channel"   "Nicht verbunden"
+                ss "$PluginId.state.members"      ""
+                ss "$PluginId.state.member_count" "0"
+            } else {
+                $names = @()
+                if ($ch.voice_states) {
+                    foreach ($vs in $ch.voice_states) {
+                        $dn = ""
+                        if ($vs.nick -and $vs.nick -ne "") { $dn = $vs.nick }
+                        elseif ($vs.user -and $vs.user.global_name -and $vs.user.global_name -ne "") { $dn = $vs.user.global_name }
+                        elseif ($vs.user -and $vs.user.username) { $dn = $vs.user.username }
+                        if ($dn -eq "") { $dn = "?" }
+                        $names += $dn
+                    }
+                }
+                ss "$PluginId.state.status"       "Online"
+                ss "$PluginId.state.my_channel"   $ch.name
+                ss "$PluginId.state.members"      ($names -join ", ")
+                ss "$PluginId.state.member_count" ([string]$names.Count)
+            }
+            ss "$PluginId.state.last_check" (Get-Date -F "HH:mm:ss")
+            ss "$PluginId.state.last_error" ""
+        }
+        "failed" {
+            ss "$PluginId.state.status" "Auth fehlgeschlagen"
         }
     }
-    return $false
 }
 
-function Poll-Discord {
-    if (-not $script:Secret) { Set-State "$PluginId.state.status" "Client Secret fehlt"; return }
-    if ($null -eq $script:Pipe -or -not $script:Pipe.IsConnected -or -not $script:RPCReady) {
-        $now = [DateTime]::Now
-        if (($now - $script:LastTry).TotalSeconds -lt $script:Backoff) { return }
-        $script:LastTry = $now
-        $script:RPCReady = Init-RPC
-        if (-not $script:RPCReady) { $script:Backoff = [Math]::Min($script:Backoff + 15, 60); return }
-        $script:Backoff = 15
-    }
-    $n = [System.Guid]::NewGuid().ToString("N")
-    if (-not (Send-RPC 1 ('{"cmd":"GET_SELECTED_VOICE_CHANNEL","args":{},"nonce":"' + $n + '"}'))) {
-        $script:RPCReady = $false; return
-    }
-    $r = Read-RPC 5000
-    if ($null -eq $r) { $script:RPCReady = $false; return }
-    $ch = $r.D.data
-    if ($null -eq $ch -or $null -eq $ch.id) {
-        Set-State "$PluginId.state.status"     "Online"
-        Set-State "$PluginId.state.my_channel" "Nicht verbunden"
-        Set-State "$PluginId.state.members"    ""
-        Set-State "$PluginId.state.member_count" "0"
-    } else {
-        $names = @()
-        if ($ch.voice_states) {
-            foreach ($vs in $ch.voice_states) {
-                $dn = if ($vs.nick) { $vs.nick } elseif ($vs.user.global_name) { $vs.user.global_name } else { $vs.user.username }
-                $names += $dn
-            }
+# ---- Settings ----
+$script:ClientId     = "1513616012593991731"
+$script:Secret       = ""
+$script:PollInterval = 5
+
+function apply-setting { param([string]$name, [string]$val)
+    switch ($name) {
+        "Application ID"          { if ($val) { $script:ClientId = $val } }
+        "Client Secret"           { $script:Secret = $val }
+        "Discord Bot Token"       { $script:Secret = $val }   # legacy field name
+        "Check Interval Seconds"  {
+            $v = 5
+            if ([int]::TryParse($val, [ref]$v) -and $v -ge 2) { $script:PollInterval = $v }
         }
-        Set-State "$PluginId.state.status"       "Online"
-        Set-State "$PluginId.state.my_channel"   $ch.name
-        Set-State "$PluginId.state.members"      ($names -join ", ")
-        Set-State "$PluginId.state.member_count" ([string]$names.Count)
     }
-    Set-State "$PluginId.state.last_check" (Get-Date -Format "HH:mm:ss")
-    Set-State "$PluginId.state.last_error" ""
 }
 
-# Runtime
-$script:ClientId  = "1513616012593991731"
-$script:Secret    = ""
-$script:Running   = $true
-$script:RPCReady  = $false
-$script:AuthFailed= $false
-$script:LastTry   = [DateTime]::MinValue
-$script:Backoff   = 15
+function apply-settings { param($items)
+    foreach ($s in $items) {
+        $s.PSObject.Properties | ForEach-Object { apply-setting $_.Name ([string]$_.Value) }
+    }
+    wl "Settings: ClientId=$($script:ClientId) SecretSet=$($script:Secret -ne '')"
+}
 
-if (-not (Connect-TP)) { Write-Log "Cannot connect TP"; exit 1 }
-Set-State "$PluginId.state.status" "Verbunden"
+# ---- Main ----
+if (-not (Connect-TP)) { wl "Cannot connect TP"; exit 1 }
+
+ss "$PluginId.state.status" "Verbunden"
 $last = [DateTime]::MinValue
-$interval = 5
 
-while ($script:Running) {
-    $msg = Read-TP
+while ($script:Run) {
+    # Process ALL pending TP messages first
+    $msg = rtp
     while ($null -ne $msg) {
-        if ($msg.type -eq "info" -and $msg.settings) {
-            foreach ($s in $msg.settings) {
-                $s.PSObject.Properties | ForEach-Object {
-                    switch ($_.Name) {
-                        "Application ID"    { if ($_.Value) { $script:ClientId = $_.Value } }
-                        "Client Secret"     { $script:Secret   = $_.Value }
-                        "Discord Bot Token" { $script:Secret   = $_.Value }
-                        "Check Interval Seconds" {
-                            $v = 5; if ([int]::TryParse($_.Value,[ref]$v) -and $v -ge 2) { $interval = $v }
-                        }
+        switch ($msg.type) {
+            "info" {
+                if ($msg.settings) { apply-settings $msg.settings }
+            }
+            "settings" {
+                if ($msg.values) { apply-settings $msg.values }
+                # Reset RPC on settings change
+                $script:RpcState    = "idle"
+                $script:NextConnect = [DateTime]::MinValue
+                if ($script:Pipe) { try { $script:Pipe.Dispose() } catch {}; $script:Pipe = $null }
+            }
+            "action" {
+                if ($msg.actionId -eq "$PluginId.action.refresh") {
+                    $last = [DateTime]::MinValue
+                    if ($script:RpcState -eq "failed") {
+                        $script:RpcState    = "idle"
+                        $script:NextConnect = [DateTime]::MinValue
                     }
                 }
             }
-            Write-Log "Settings: ClientId=$($script:ClientId) SecretSet=$($script:Secret -ne '')"
-        } elseif ($msg.type -eq "settings" -and $msg.values) {
-            foreach ($s in $msg.values) {
-                $s.PSObject.Properties | ForEach-Object {
-                    switch ($_.Name) {
-                        "Application ID"    { if ($_.Value) { $script:ClientId = $_.Value } }
-                        "Client Secret"     { $script:Secret   = $_.Value }
-                        "Discord Bot Token" { $script:Secret   = $_.Value }
-                        "Check Interval Seconds" {
-                            $v = 5; if ([int]::TryParse($_.Value,[ref]$v) -and $v -ge 2) { $interval = $v }
-                        }
-                    }
-                }
+            "closePlugin" {
+                wl "closePlugin received"
+                $script:Run = $false
             }
-            $script:RPCReady = $false; $script:AuthFailed = $false; $script:Backoff = 15
-            if ($script:Pipe) { try { $script:Pipe.Dispose() } catch {}; $script:Pipe = $null }
-        } elseif ($msg.type -eq "action" -and $msg.actionId -eq "$PluginId.action.refresh") {
-            $last = [DateTime]::MinValue
-        } elseif ($msg.type -eq "closePlugin") {
-            $script:Running = $false
         }
-        $msg = Read-TP
+        $msg = rtp
     }
-    if (([DateTime]::Now - $last).TotalSeconds -ge $interval) {
-        Poll-Discord; $last = [DateTime]::Now
+
+    if (-not $script:Run) { break }
+
+    # Tick RPC state machine (non-blocking, max ~300ms per tick)
+    if ($script:Secret -ne "") {
+        $elapsed = ([DateTime]::Now - $last).TotalSeconds
+        if ($elapsed -ge $script:PollInterval -or $script:RpcState -eq "authorizing" -or $script:RpcState -eq "handshaking" -or $script:RpcState -eq "authenticating") {
+            tick-rpc
+            if ($script:RpcState -eq "ready") { $last = [DateTime]::Now }
+        }
+    } else {
+        ss "$PluginId.state.status" "Client Secret fehlt"
     }
+
     Start-Sleep -Milliseconds 200
 }
 
-Write-Log "Stopping"
+wl "=== Stopping ==="
 try { if ($script:Pipe) { $script:Pipe.Dispose() } } catch {}
 try { $script:Writer.Dispose() } catch {}
-try { $script:Tcp.Dispose() } catch {}
+try { $script:Tcp.Dispose()    } catch {}
