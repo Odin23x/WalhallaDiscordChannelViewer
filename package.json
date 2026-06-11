@@ -1,0 +1,10 @@
+{
+  "name": "walhalla-discord-channel-viewer",
+  "version": "3.0.0",
+  "description": "Touch Portal plugin - Discord Voice Channel Viewer",
+  "main": "index.js",
+  "dependencies": {
+    "touchportal-api": "^1.1.0",
+    "discord-rpc": "^4.0.1"
+  }
+}
