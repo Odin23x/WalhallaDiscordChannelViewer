@@ -208,6 +208,7 @@ $script:RpcDeadline = [DateTime]::MinValue
 $script:AccessToken = ""
 $script:NextConnect = [DateTime]::MinValue
 $script:ConnectWait = 15
+$script:NameCache   = @{}   # userId -> realName (survives Streamer Mode)
 
 function tick-rpc {
     switch ($script:RpcState) {
@@ -348,10 +349,18 @@ function tick-rpc {
                 $names = @()
                 if ($ch.voice_states) {
                     foreach ($vs in $ch.voice_states) {
-                        $dn = ""
+                        $dn  = ""
+                        $uid = if ($vs.user) { $vs.user.id } else { "" }
                         if ($vs.nick -and $vs.nick -ne "") { $dn = $vs.nick }
                         elseif ($vs.user -and $vs.user.global_name -and $vs.user.global_name -ne "") { $dn = $vs.user.global_name }
                         elseif ($vs.user -and $vs.user.username) { $dn = $vs.user.username }
+                        # Streamer Mode check: Discord anonymizes to "X..." or "X…"
+                        $anon = ($dn -match "…$" -or $dn -match "\.\.\.$")
+                        if (-not $anon -and $dn -ne "" -and $uid -ne "") {
+                            $script:NameCache[$uid] = $dn   # cache real name
+                        } elseif ($anon -and $uid -ne "" -and $script:NameCache.ContainsKey($uid)) {
+                            $dn = $script:NameCache[$uid]   # use cached real name
+                        }
                         if ($dn -eq "") { $dn = "?" }
                         $names += $dn
                     }
