@@ -350,16 +350,20 @@ function tick-rpc {
                 if ($ch.voice_states) {
                     foreach ($vs in $ch.voice_states) {
                         $dn  = ""
-                        $uid = if ($vs.user) { $vs.user.id } else { "" }
+                        $uid = ""
+                        if ($vs.user -and $vs.user.id) { $uid = [string]$vs.user.id }
                         if ($vs.nick -and $vs.nick -ne "") { $dn = $vs.nick }
                         elseif ($vs.user -and $vs.user.global_name -and $vs.user.global_name -ne "") { $dn = $vs.user.global_name }
                         elseif ($vs.user -and $vs.user.username) { $dn = $vs.user.username }
-                        # Streamer Mode check: Discord anonymizes to "X..." or "X…"
-                        $anon = ($dn -match "…$" -or $dn -match "\.\.\.$")
+                        # Detect Streamer Mode: name ends with U+2026 or "..."
+                        $ellipsis = [char]8230
+                        $anon = $dn.Contains($ellipsis) -or $dn.EndsWith("...")
+                        wl "Name: uid=$uid dn=$dn anon=$anon cacheSize=$($script:NameCache.Count)"
                         if (-not $anon -and $dn -ne "" -and $uid -ne "") {
-                            $script:NameCache[$uid] = $dn   # cache real name
+                            $script:NameCache[$uid] = $dn
                         } elseif ($anon -and $uid -ne "" -and $script:NameCache.ContainsKey($uid)) {
-                            $dn = $script:NameCache[$uid]   # use cached real name
+                            $dn = $script:NameCache[$uid]
+                            wl "Cache hit: $uid -> $dn"
                         }
                         if ($dn -eq "") { $dn = "?" }
                         $names += $dn
