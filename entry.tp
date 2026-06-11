@@ -1,37 +1,33 @@
 {
-  "sdk": 6,
-  "version": 200,
-  "name": "WalhallaDiscordChannelViewer",
+  "api": 10,
+  "version": 300,
+  "name": "Walhalla Discord Channel Viewer",
   "id": "odin23x.walhalla_discord_channel_viewer",
   "configuration": {
     "colorDark": "#23272A",
-    "colorLight": "#7289DA"
+    "colorLight": "#5865F2",
+    "parentCategory": "social"
   },
-  "plugin_start_cmd": "cmd.exe /c IF EXIST \"%APPDATA%\\TouchPortal\\plugins\\WalhallaDiscordChannelViewer\\DiscordChannelViewer.ps1\" (powershell.exe -NonInteractive -ExecutionPolicy Bypass -File \"%APPDATA%\\TouchPortal\\plugins\\WalhallaDiscordChannelViewer\\DiscordChannelViewer.ps1\") ELSE (powershell.exe -NonInteractive -ExecutionPolicy Bypass -File \"%APPDATA%\\TouchPortal\\plugins\\DiscordChannelViewer.ps1\")",
+  "plugin_start_cmd_windows": "\"%TP_PLUGIN_FOLDER%WalhallaDiscordChannelViewer\\run.bat\"",
   "settings": [
     {
       "name": "Application ID",
       "type": "text",
-      "default": "1513616012593991731"
+      "default": "1513616012593991731",
+      "readOnly": false
     },
     {
       "name": "Client Secret",
       "type": "text",
       "default": "",
-      "isPassword": true
-    },
-    {
-      "name": "Check Interval Seconds",
-      "type": "number",
-      "default": "5",
-      "minValue": 2
+      "isPassword": true,
+      "readOnly": false
     }
   ],
   "categories": [
     {
       "id": "odin23x.walhalla_discord_channel_viewer.cat.main",
-      "name": "Discord Channel Viewer",
-      "imagepath": "",
+      "name": "Walhalla | Discord Channel Viewer",
       "actions": [
         {
           "id": "odin23x.walhalla_discord_channel_viewer.action.refresh",
@@ -39,50 +35,58 @@
           "prefix": "Discord",
           "type": "communicate",
           "format": "Discord Channel jetzt aktualisieren",
-          "data": []
+          "tryInline": true,
+          "data": [
+            {
+              "id": "odin23x.walhalla_discord_channel_viewer.action.refresh.dummy",
+              "type": "text",
+              "label": "unused",
+              "default": ""
+            }
+          ]
         }
       ],
       "states": [
         {
           "id": "odin23x.walhalla_discord_channel_viewer.state.status",
           "type": "text",
-          "desc": "Status",
+          "desc": "Discord Channel | Status",
           "default": "Nicht verbunden"
         },
         {
           "id": "odin23x.walhalla_discord_channel_viewer.state.my_channel",
           "type": "text",
-          "desc": "Mein Channel",
-          "default": "Nicht verbunden"
+          "desc": "Discord Channel | Mein Channel",
+          "default": "Kein Channel"
         },
         {
           "id": "odin23x.walhalla_discord_channel_viewer.state.members",
           "type": "text",
-          "desc": "Channel Mitglieder",
+          "desc": "Discord Channel | Mitglieder (zeilenweise)",
           "default": ""
         },
         {
           "id": "odin23x.walhalla_discord_channel_viewer.state.member_count",
           "type": "text",
-          "desc": "Mitglieder Anzahl",
+          "desc": "Discord Channel | Mitglieder Anzahl",
           "default": "0"
         },
         {
           "id": "odin23x.walhalla_discord_channel_viewer.state.last_check",
           "type": "text",
-          "desc": "Letzter Check",
+          "desc": "Discord Channel | Letzter Check",
           "default": ""
         },
         {
           "id": "odin23x.walhalla_discord_channel_viewer.state.last_error",
           "type": "text",
-          "desc": "Letzter Fehler",
+          "desc": "Discord Channel | Letzter Fehler",
           "default": ""
         },
         {
           "id": "odin23x.walhalla_discord_channel_viewer.state.debug",
           "type": "text",
-          "desc": "Debug Info",
+          "desc": "Discord Channel | Debug Info",
           "default": ""
         }
       ],
