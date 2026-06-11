@@ -9,8 +9,9 @@ try { [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::
 $PluginId = "odin23x.walhalla_discord_channel_viewer"
 $TPPort   = 12136
 $LogDir   = "$env:APPDATA\TouchPortal\plugins\WalhallaDiscordChannelViewer"
-$LogFile  = "$LogDir\plugin.log"
-$TokFile  = "$LogDir\rpc_token.json"
+$LogFile   = "$LogDir\plugin.log"
+$TokFile   = "$LogDir\rpc_token.json"
+$CacheFile = "$LogDir\name_cache.json"
 
 function wl { param([string]$m)
     $l = "[$(Get-Date -F 'HH:mm:ss')] $m"
@@ -20,7 +21,6 @@ function wl { param([string]$m)
 }
 
 wl "=== v4 starting ==="
-Load-NameCache
 
 # ---- TP socket ----
 $script:Tcp    = $null
@@ -210,19 +210,19 @@ $script:AccessToken = ""
 $script:NextConnect = [DateTime]::MinValue
 $script:ConnectWait = 15
 $script:NameCache   = @{}
-$script:CacheFile   = "$LogDir\name_cache.json"
+Load-NameCache
 
 function Load-NameCache {
-    if (Test-Path $script:CacheFile) {
+    if (Test-Path $CacheFile) {
         try {
-            $d = Get-Content $script:CacheFile -Raw | ConvertFrom-Json
+            $d = Get-Content $CacheFile -Raw | ConvertFrom-Json
             $d.PSObject.Properties | ForEach-Object { $script:NameCache[$_.Name] = $_.Value }
             wl "Name cache loaded: $($script:NameCache.Count) entries"
         } catch {}
     }
 }
 function Save-NameCache {
-    try { $script:NameCache | ConvertTo-Json | Set-Content $script:CacheFile -Encoding UTF8 } catch {}
+    try { $script:NameCache | ConvertTo-Json | Set-Content $CacheFile -Encoding UTF8 } catch {}
 }
 
 function tick-rpc {
