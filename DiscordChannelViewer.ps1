@@ -20,6 +20,7 @@ function wl { param([string]$m)
 }
 
 wl "=== v4 starting ==="
+Load-NameCache
 
 # ---- TP socket ----
 $script:Tcp    = $null
@@ -208,7 +209,21 @@ $script:RpcDeadline = [DateTime]::MinValue
 $script:AccessToken = ""
 $script:NextConnect = [DateTime]::MinValue
 $script:ConnectWait = 15
-$script:NameCache   = @{}   # userId -> realName (survives Streamer Mode)
+$script:NameCache   = @{}
+$script:CacheFile   = "$LogDir\name_cache.json"
+
+function Load-NameCache {
+    if (Test-Path $script:CacheFile) {
+        try {
+            $d = Get-Content $script:CacheFile -Raw | ConvertFrom-Json
+            $d.PSObject.Properties | ForEach-Object { $script:NameCache[$_.Name] = $_.Value }
+            wl "Name cache loaded: $($script:NameCache.Count) entries"
+        } catch {}
+    }
+}
+function Save-NameCache {
+    try { $script:NameCache | ConvertTo-Json | Set-Content $script:CacheFile -Encoding UTF8 } catch {}
+}
 
 function tick-rpc {
     switch ($script:RpcState) {
@@ -360,10 +375,12 @@ function tick-rpc {
                         $anon = $dn.Contains($ellipsis) -or $dn.EndsWith("...")
                         wl "Name: uid=$uid dn=$dn anon=$anon cacheSize=$($script:NameCache.Count)"
                         if (-not $anon -and $dn -ne "" -and $uid -ne "") {
-                            $script:NameCache[$uid] = $dn
+                            if (-not $script:NameCache.ContainsKey($uid) -or $script:NameCache[$uid] -ne $dn) {
+                                $script:NameCache[$uid] = $dn
+                                Save-NameCache
+                            }
                         } elseif ($anon -and $uid -ne "" -and $script:NameCache.ContainsKey($uid)) {
                             $dn = $script:NameCache[$uid]
-                            wl "Cache hit: $uid -> $dn"
                         }
                         if ($dn -eq "") { $dn = "?" }
                         $names += $dn
